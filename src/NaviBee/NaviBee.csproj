@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x86</PlatformTarget>
+    <Platforms>x86</Platforms>
+    <Deterministic>true</Deterministic>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>mb_NaviBee</AssemblyName>
+    <RootNamespace>MusicBeePlugin</RootNamespace>
+    <Authors>TaffyEx</Authors>
+    <Product>NaviBee</Product>
+    <Version>1.0.0</Version>
+    <OutputPath>bin\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Optimize>true</Optimize>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Domain\NavidromeSettings.cs" />
+    <Compile Include="Domain\ConnectStream.cs" />
+    <Compile Include="Domain\SubsonicModels.cs" />
+    <Compile Include="Domain\SubsonicJsonParser.cs" />
+    <Compile Include="Services\SubsonicClient.cs" />
+    <Compile Include="Services\SubsonicClient.Queries.cs" />
+    <Compile Include="Services\ArtworkCache.cs" />
+    <Compile Include="Services\AudioStreamCache.cs" />
+    <Compile Include="Services\NavidromeCatalog.cs" />
+    <Compile Include="Services\NavidromeCatalog.Index.cs" />
+    <Compile Include="Services\MusicBeeArtworkBridge.cs" />
+    <Compile Include="Services\MusicBeeArtworkBridge.Discovery.cs" />
+    <Compile Include="Windows\SettingsWindow.cs" />
+    <Compile Include="Windows\SettingsWindow.Actions.cs" />
+    <Compile Include="Plugin.Lifecycle.cs" />
+    <Compile Include="Plugin.Storage.cs" />
+    <Compile Include="Plugin.Storage.Stream.cs" />
+    <Compile Include="Plugin.Sync.cs" />
+    <Compile Include="Plugin.Artwork.cs" />
+    <Compile Include="MusicBeeInterface.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+</Project>
