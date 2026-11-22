@@ -6,6 +6,18 @@ namespace MusicBeePlugin
 {
     public partial class Plugin
     {
+        private static KeyValuePair<byte, string>[] WithCachedLyricsTag(SubsonicSong song, KeyValuePair<byte, string>[] baseTags)
+        {
+            if (song == null || baseTags == null) return baseTags;
+            if (!LyricsCache.Instance.TryGetCached(song.Id, out var lyr) || !lyr.HasLyrics)
+                return baseTags;
+
+            var expanded = new KeyValuePair<byte, string>[baseTags.Length + 1];
+            Array.Copy(baseTags, expanded, baseTags.Length);
+            expanded[baseTags.Length] = new KeyValuePair<byte, string>(lyr.IsSynced ? (byte)103 : (byte)114, lyr.Text);
+            return expanded;
+        }
+
         public KeyValuePair<byte, string>[] GetFile(string url)
         {
             string clean = CleanPath(url);
@@ -19,7 +31,7 @@ namespace MusicBeePlugin
                     if (song == null) SongById.TryGetValue(clean, out song);
                 }
             }
-            if (song != null) return song.CachedTags ?? SubsonicUrlHelper.ToTags(song);
+            if (song != null) return WithCachedLyricsTag(song, song.CachedTags ?? SubsonicUrlHelper.ToTags(song));
 
             var info = SubsonicUrlHelper.ParseUrl(url);
             if (!string.IsNullOrEmpty(info.Id))
@@ -31,7 +43,7 @@ namespace MusicBeePlugin
                     {
                         song = SubsonicJsonParser.ParseSong(songDict);
                         RegisterSong(song);
-                        return song.CachedTags ?? SubsonicUrlHelper.ToTags(song);
+                        return WithCachedLyricsTag(song, song.CachedTags ?? SubsonicUrlHelper.ToTags(song));
                     }
                 }
                 catch { }
@@ -110,19 +122,43 @@ namespace MusicBeePlugin
 
             if (song != null)
             {
-                var cachedStream = AudioStreamCache.Instance.TryOpenCachedStream(song, bitrate);
-                if (cachedStream != null)
-                    return cachedStream;
+                string fullUrl = "Navidrome:\\" + (!string.IsNullOrEmpty(song.CachedRelativePath)
+                    ? song.CachedRelativePath
+                    : SubsonicUrlHelper.BuildRelativePath(song));
 
-                Uri streamUri = Subsonic.GetStreamUri(song.Id, bitrate);
-                long expectedSize = bitrate > 0 ? 0 : song.Size;
-                if (cacheMaxMb != 0)
+                System.Threading.Tasks.Task<SubsonicLyricsResult> lyricsTask = null;
+                if (LyricsCache.Instance.TryGetCached(song.Id, out var cachedLyrics))
                 {
-                    string teePath = AudioStreamCache.Instance.CreateTeeTempPath(song, bitrate);
-                    return new ConnectStream(streamUri, expectedSize, teePath, completed =>
-                        AudioStreamCache.Instance.CommitTeeFile(song, bitrate, completed, cacheMaxMb));
+                    if (cachedLyrics.HasLyrics)
+                        MusicBeeLyricsBridge.AttachLyrics(fullUrl, cachedLyrics.Text, cachedLyrics.IsSynced, refreshActivePanel: false);
                 }
-                return new ConnectStream(streamUri, expectedSize);
+                else
+                {
+                    lyricsTask = LyricsCache.Instance.GetOrFetchAsync(song, Subsonic);
+                }
+
+                Stream streamResult = AudioStreamCache.Instance.TryOpenCachedStream(song, bitrate);
+                if (streamResult == null)
+                {
+                    Uri streamUri = Subsonic.GetStreamUri(song.Id, bitrate);
+                    long expectedSize = bitrate > 0 ? 0 : song.Size;
+                    streamResult = cacheMaxMb != 0
+                        ? new ConnectStream(streamUri, expectedSize, AudioStreamCache.Instance.CreateTeeTempPath(song, bitrate), completed =>
+                            AudioStreamCache.Instance.CommitTeeFile(song, bitrate, completed, cacheMaxMb))
+                        : new ConnectStream(streamUri, expectedSize);
+                }
+
+                if (lyricsTask != null)
+                {
+                    try
+                    {
+                        if (lyricsTask.Wait(250) && lyricsTask.Result != null && lyricsTask.Result.HasLyrics)
+                            MusicBeeLyricsBridge.AttachLyrics(fullUrl, lyricsTask.Result.Text, lyricsTask.Result.IsSynced, refreshActivePanel: false);
+                    }
+                    catch { }
+                }
+
+                return streamResult;
             }
 
             var fallbackInfo = SubsonicUrlHelper.ParseUrl(url);

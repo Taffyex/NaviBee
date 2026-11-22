@@ -19,6 +19,7 @@ namespace MusicBeePlugin
             Api.Initialise(apiInterfacePtr);
             Instance = this;
             MusicBeeArtworkBridge.Initialize(Api);
+            MusicBeeLyricsBridge.Initialize(Api);
 
             string persistentPath = Api.Setting_GetPersistentStoragePath != null
                 ? Api.Setting_GetPersistentStoragePath()
@@ -27,6 +28,7 @@ namespace MusicBeePlugin
             NavidromeCatalog.Instance.ConfigureStorage(persistentPath);
             ArtworkCache.Instance.ConfigureStorage(persistentPath);
             AudioStreamCache.Instance.ConfigureStorage(persistentPath);
+            LyricsCache.Instance.ConfigureStorage(persistentPath);
 
             SettingsFilePath = Path.Combine(persistentPath, "mb_NavidromePlugin.json");
             if (!File.Exists(SettingsFilePath))
@@ -65,7 +67,7 @@ namespace MusicBeePlugin
                 TargetApplication = "Navidrome",
                 VersionMajor = 1,
                 VersionMinor = 0,
-                Revision = 0,
+                Revision = 1,
                 MinInterfaceVersion = MusicBeeApiInfo.MinInterfaceVersion,
                 MinApiRevision = MusicBeeApiInfo.MinApiRevision,
                 ReceiveNotifications =
@@ -204,8 +206,9 @@ namespace MusicBeePlugin
         {
             ArtworkCache.Instance.ClearDiskCache();
             AudioStreamCache.Instance.ClearCache();
+            LyricsCache.Instance.ClearCache();
             Refresh();
-            ShowUiMessage("Audio playback and artwork caches cleared successfully.", "Navidrome Cache", MessageBoxIcon.Information);
+            ShowUiMessage("Audio, artwork, and lyrics caches cleared successfully.", "Navidrome Cache", MessageBoxIcon.Information);
         }
 
         private void ImportAllToLibrary()

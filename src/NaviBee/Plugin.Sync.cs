@@ -73,6 +73,14 @@ namespace MusicBeePlugin
             {
                 Subsonic.Scrobble(song.Id, submission: false);
 
+                try
+                {
+                    var lyr = LyricsCache.Instance.GetOrFetchAsync(song, Subsonic).GetAwaiter().GetResult();
+                    if (lyr != null && lyr.HasLyrics)
+                        MusicBeeLyricsBridge.AttachLyrics(sourceFileUrl, lyr.Text, lyr.IsSynced, refreshActivePanel: true);
+                }
+                catch { }
+
                 if (MusicBeeArtworkBridge.IsAvailable)
                 {
                     string coverId = !string.IsNullOrEmpty(song.CanonicalCoverId) ? song.CanonicalCoverId : song.CoverArt;
@@ -88,14 +96,18 @@ namespace MusicBeePlugin
                 }
             });
 
-            if (Settings != null && Settings.PrefetchNextTrack && Api.NowPlayingList_GetCurrentIndex != null && Api.NowPlayingList_GetListFileUrl != null)
+            if (Api.NowPlayingList_GetCurrentIndex != null && Api.NowPlayingList_GetListFileUrl != null)
             {
                 int curIdx = Api.NowPlayingList_GetCurrentIndex();
                 if (curIdx >= 0)
                 {
                     string nextUrl = Api.NowPlayingList_GetListFileUrl(curIdx + 1);
                     if (!string.IsNullOrEmpty(nextUrl) && TryResolveSong(nextUrl, out var nextSong))
-                        AudioStreamCache.Instance.PrefetchNextTrack(nextSong, Subsonic, Settings);
+                    {
+                        LyricsCache.Instance.PrefetchAsync(nextSong, Subsonic);
+                        if (Settings != null && Settings.PrefetchNextTrack)
+                            AudioStreamCache.Instance.PrefetchNextTrack(nextSong, Subsonic, Settings);
+                    }
                 }
             }
         }

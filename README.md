@@ -1,15 +1,15 @@
-# NaviBee v1.0.0
+# NaviBee v1.0.1
 
-NaviBee is a native **Navidrome and Subsonic / OpenSubsonic storage provider and two-way sync plugin** for [MusicBee](https://getmusicbee.com/). Engineered in pure C# (.NET Framework 4.8, x86) against the MusicBee plugin API, it mounts your remote Navidrome library directly inside MusicBee with HTTP `Range`-seekable streaming, single-pass audio and artwork caching, scrobbling, star/rating sync, and playlist synchronization.
+NaviBee is a native **Navidrome and Subsonic / OpenSubsonic storage provider and two-way sync plugin** for [MusicBee](https://getmusicbee.com/). Engineered in pure C# (.NET Framework 4.8, x86) against the MusicBee plugin API, it mounts your remote Navidrome library directly inside MusicBee with HTTP `Range`-seekable streaming, single-pass audio/artwork/lyrics caching, time-synced LRC lyrics, scrobbling, star/rating sync, and playlist synchronization.
 
 ---
 
 ## Installation
 
 ### Quick Install (Recommended)
-1. Download **[`NaviBee_v1.0.0.zip`](https://github.com/Taffyex/NaviBee/releases/download/v1.0.0/NaviBee_v1.0.0.zip)** (or raw **[`mb_NaviBee.dll`](https://github.com/Taffyex/NaviBee/releases/download/v1.0.0/mb_NaviBee.dll)**) from the [latest release](https://github.com/Taffyex/NaviBee/releases).
+1. Download **[`NaviBee_v1.0.1.zip`](https://github.com/Taffyex/NaviBee/releases/download/v1.0.1/NaviBee_v1.0.1.zip)** (or raw **[`mb_NaviBee.dll`](https://github.com/Taffyex/NaviBee/releases/download/v1.0.1/mb_NaviBee.dll)**) from the [latest release](https://github.com/Taffyex/NaviBee/releases).
 2. In MusicBee, press `Ctrl + O` (or go to **Edit** > **Preferences**).
-3. Select **Plugins**, click **Add Plugin**, and choose `NaviBee_v1.0.0.zip` (or `mb_NaviBee.dll`).
+3. Select **Plugins**, click **Add Plugin**, and choose `NaviBee_v1.0.1.zip` (or `mb_NaviBee.dll`).
 4. Click **Apply** and restart MusicBee.
 
 ### Manual Drop-in
@@ -31,6 +31,7 @@ NaviBee is a native **Navidrome and Subsonic / OpenSubsonic storage provider and
 ## Features
 
 - **Native Storage Provider (`PluginType.Storage`)**: Browse `All Albums`, `Favorites`, `Top Rated`, `Most Played`, `Playlists`, and `Artist / Album` inside MusicBee, or import tracks directly into your main `Music` library via **Tools** > **Navidrome: Import All Tracks into Music Library**.
+- **Time-Synced Lyrics & Local Cache**: Fetches OpenSubsonic `getLyricsBySongId` (with `getLyrics` fallback), formats synced `.lrc` lines with offset correction, caches lyrics locally under `NavidromeCache\Lyrics`, pre-fetches the next queued track, and injects lyrics in memory into MusicBee's Lyrics panel.
 - **Smart Startup Catalog Cache**: Persists `catalog.json` locally and checks `getScanStatus` on startup, running paginated `search3` syncs only when the server scan timestamp or track count changes.
 - **Range-Seekable Streaming & LRU Audio Cache**: Streams via `ConnectStream` with HTTP `Range` seeking, optional server transcoding (`Original`, `128`, `192`, `256`, `320 kbps`), configurable cache limits (`0` to `Unlimited`), single-pass stream-to-cache capture, and next-track queue prefetching.
 - **High-Resolution Artwork Cache**: Background pre-warming and on-demand caching at configurable sizes (`Original`, `1200 px`, `800 px`, `300 px`).

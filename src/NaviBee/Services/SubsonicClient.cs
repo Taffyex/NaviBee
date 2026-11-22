@@ -44,6 +44,7 @@ namespace MusicBeePlugin
         {
             _settings = settings ?? new NavidromeSettings();
             ArtworkCache.Instance.ClearMemoryCache();
+            LyricsCache.Instance.ClearMemoryCache();
         }
 
         internal static void ConfigureRequest(HttpWebRequest req)

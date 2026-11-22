@@ -197,5 +197,46 @@ namespace MusicBeePlugin
             }
             return result;
         }
+
+        public SubsonicLyricsResult GetLyricsBySongId(string songId)
+        {
+            if (string.IsNullOrWhiteSpace(songId))
+                return SubsonicLyricsResult.Empty;
+
+            var resp = SendRequest("getLyricsBySongId", new Dictionary<string, string> { { "id", songId } }, 10000);
+            if (resp != null && resp.TryGetValue("lyricsList", out var listObj) && listObj is IDictionary<string, object> lyricsList)
+                return SubsonicLyricsFormatter.ParseStructuredLyrics(lyricsList);
+            return SubsonicLyricsResult.Empty;
+        }
+
+        public SubsonicLyricsResult GetLegacyLyrics(string artist, string title)
+        {
+            if (string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title))
+                return SubsonicLyricsResult.Empty;
+
+            var q = new Dictionary<string, string>();
+            if (!string.IsNullOrWhiteSpace(artist)) q["artist"] = artist;
+            if (!string.IsNullOrWhiteSpace(title)) q["title"] = title;
+
+            var resp = SendRequest("getLyrics", q, 10000);
+            if (resp != null && resp.TryGetValue("lyrics", out var lyrObj) && lyrObj is IDictionary<string, object> lyrDict)
+            {
+                string val = SubsonicJsonParser.GetString(lyrDict, "value");
+                return SubsonicLyricsFormatter.NormalizeRawLyrics(val);
+            }
+            return SubsonicLyricsResult.Empty;
+        }
+
+        public SubsonicLyricsResult GetBestLyrics(SubsonicSong song)
+        {
+            if (song == null || string.IsNullOrWhiteSpace(song.Id))
+                return SubsonicLyricsResult.Empty;
+
+            var structured = GetLyricsBySongId(song.Id);
+            if (structured.HasLyrics)
+                return structured;
+
+            return GetLegacyLyrics(song.Artist, song.Title);
+        }
     }
 }

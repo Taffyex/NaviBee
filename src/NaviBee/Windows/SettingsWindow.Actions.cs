@@ -109,9 +109,10 @@ namespace MusicBeePlugin
         {
             ArtworkCache.Instance.GetCacheStats(out int artCount, out long artBytes);
             AudioStreamCache.Instance.GetCacheStats(out int audioCount, out long audioBytes);
+            LyricsCache.Instance.GetCacheStats(out int lyricsCount, out long lyricsBytes);
             double artMb = artBytes / (1024.0 * 1024.0);
             double audioMb = audioBytes / (1024.0 * 1024.0);
-            string text = $"Cache: {artCount} artwork files ({artMb:F1} MB) | {audioCount} audio files ({audioMb:F1} MB)";
+            string text = $"Cache: {artCount} art ({artMb:F1} MB) | {audioCount} audio ({audioMb:F1} MB) | {lyricsCount} lyrics";
             if (IsHandleCreated && InvokeRequired) SafeUi(() => _lblCacheStats.Text = text);
             else _lblCacheStats.Text = text;
         }
@@ -169,9 +170,10 @@ namespace MusicBeePlugin
         {
             ArtworkCache.Instance.ClearDiskCache();
             AudioStreamCache.Instance.ClearCache();
+            LyricsCache.Instance.ClearCache();
             RefreshStats();
             _lblStatus.ForeColor = Color.DarkGreen;
-            _lblStatus.Text = "Artwork and audio caches cleared.";
+            _lblStatus.Text = "Artwork, audio, and lyrics caches cleared.";
         }
 
         private async Task TestConnectionAsync()

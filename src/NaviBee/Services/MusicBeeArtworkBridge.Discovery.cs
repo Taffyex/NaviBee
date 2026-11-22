@@ -8,7 +8,7 @@ namespace MusicBeePlugin
 {
     public static partial class MusicBeeArtworkBridge
     {
-        private static Type[] SafeGetTypes(Assembly asm)
+        internal static Type[] SafeGetTypes(Assembly asm)
         {
             try
             {
@@ -60,6 +60,7 @@ namespace MusicBeePlugin
                         {
                             arType = t;
                             fpType = ps[3].ParameterType;
+                            _filePathType = fpType;
                             _artworkRefCtor = ctor;
                             _filePathCtor = fpCtor;
                             break;
@@ -103,6 +104,7 @@ namespace MusicBeePlugin
                 }
             }
             if (trackType == null || _trackArtworkField == null) return false;
+            _trackType = trackType;
 
             _tagGetTrackMethod = FindGetTrackMethod(types, fpType, trackType, StaticFlags);
             _artClearMethod = FindArtClearMethod(types, trackType, arType, StaticFlags);

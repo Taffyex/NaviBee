@@ -14,6 +14,9 @@ namespace MusicBeePlugin
         private static readonly object _initLock = new object();
         private static Func<IntPtr> _windowHandleProvider;
 
+        private static Assembly _mbAssembly;
+        private static Type _filePathType;
+        private static Type _trackType;
         private static ConstructorInfo _filePathCtor;
         private static MethodInfo _tagGetTrackMethod;
         private static ConstructorInfo _artworkRefCtor;
@@ -23,6 +26,13 @@ namespace MusicBeePlugin
 
         private static object _albumCoverEnumVal;
         private static object _linkToSourceEnumVal;
+
+        internal static Assembly MbAssembly { get { EnsureInitialized(); return _mbAssembly; } }
+        internal static Type FilePathType { get { EnsureInitialized(); return _filePathType; } }
+        internal static Type TrackType { get { EnsureInitialized(); return _trackType; } }
+        internal static ConstructorInfo FilePathCtor { get { EnsureInitialized(); return _filePathCtor; } }
+        internal static MethodInfo TagGetTrackMethod { get { EnsureInitialized(); return _tagGetTrackMethod; } }
+        internal static IntPtr GetHostWindowHandle() => _windowHandleProvider != null ? _windowHandleProvider() : IntPtr.Zero;
 
         public static void Initialize(MusicBeeApiInterface api)
         {
@@ -58,6 +68,7 @@ namespace MusicBeePlugin
                         return;
                     }
 
+                    _mbAssembly = mbAssembly;
                     _isAvailable = DiscoverBridgeMembers(mbAssembly);
                 }
                 catch
@@ -67,7 +78,7 @@ namespace MusicBeePlugin
             }
         }
 
-        private static void RunOnUiThread(Action action)
+        internal static void RunOnUiThread(Action action)
         {
             if (action == null) return;
             try
