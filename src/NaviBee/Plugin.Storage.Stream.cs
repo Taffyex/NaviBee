@@ -209,7 +209,7 @@ namespace MusicBeePlugin
 
         public bool DeleteFile(string url) => false;
         public bool DeleteFolder(string path) => false;
-        public bool DeletePlaylist(string id, bool deleteFiles) => Subsonic.DeletePlaylist(id);
+        public bool DeletePlaylist(string id, bool deleteFiles) => ConfirmAndDeleteServerPlaylist(id);
 
         public Exception GetError() => Subsonic?.LastError;
     }

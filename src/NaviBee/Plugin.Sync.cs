@@ -1,18 +1,41 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Globalization;
-using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 
 namespace MusicBeePlugin
 {
+    public struct TrackTagSnapshot
+    {
+        public bool IsLoved;
+        public int Stars;
+    }
+
+    public struct TrackPlayBaseline
+    {
+        public int PlayCount;
+        public int SkipCount;
+        public bool HasPlayCount;
+        public bool HasSkipCount;
+    }
+
     public partial class Plugin
     {
         private static readonly object _nowPlayingLock = new object();
         private static string _lastNowPlayingUrl = "";
+        private static readonly ConcurrentDictionary<string, TrackTagSnapshot> _lastKnownTags =
+            new ConcurrentDictionary<string, TrackTagSnapshot>(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, TrackPlayBaseline> _playBaselines =
+            new ConcurrentDictionary<string, TrackPlayBaseline>(StringComparer.OrdinalIgnoreCase);
 
-        private static bool TryResolveSong(string sourceFileUrl, out SubsonicSong song)
+        internal static void ResetSyncTracking()
+        {
+            _lastKnownTags.Clear();
+            _playBaselines.Clear();
+            lock (_nowPlayingLock) { _lastNowPlayingUrl = ""; }
+        }
+
+        private static bool TryResolveSong(string sourceFileUrl, out SubsonicSong song, bool allowPlaceholder = true)
         {
             song = null;
             if (string.IsNullOrEmpty(sourceFileUrl)) return false;
@@ -36,11 +59,67 @@ namespace MusicBeePlugin
                     song = NavidromeCatalog.Instance.FindSongById(id);
                     if (song != null) return true;
                     lock (CacheLock) { if (SongById.TryGetValue(id, out song)) return true; }
+                    if (!allowPlaceholder) return false;
                     song = new SubsonicSong { Id = id };
                     return true;
                 }
             }
             return false;
+        }
+
+        private static bool ParseLoveTag(string love)
+        {
+            return string.Equals(love, "L", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(love, "1", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(love, "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void CaptureLibraryTagSnapshot(string sourceFileUrl, SubsonicSong song)
+        {
+            if (song == null || string.IsNullOrEmpty(song.Id) || Api.Library_GetFileTag == null) return;
+            try
+            {
+                string love = Api.Library_GetFileTag(sourceFileUrl, MetaDataType.RatingLove) ?? "";
+                string ratingStr = Api.Library_GetFileTag(sourceFileUrl, MetaDataType.Rating) ?? "";
+                TryParseStarRating(ratingStr, out int stars);
+                _lastKnownTags[song.Id] = new TrackTagSnapshot
+                {
+                    IsLoved = ParseLoveTag(love),
+                    Stars = stars
+                };
+            }
+            catch { }
+        }
+
+        private static TrackPlayBaseline ReadPlayBaseline(string sourceFileUrl)
+        {
+            var b = new TrackPlayBaseline();
+            if (Api.Library_GetFileProperty == null || string.IsNullOrEmpty(sourceFileUrl))
+                return b;
+            try
+            {
+                string playStr = Api.Library_GetFileProperty(sourceFileUrl, FilePropertyType.PlayCount);
+                if (int.TryParse(playStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pc))
+                {
+                    b.PlayCount = pc;
+                    b.HasPlayCount = true;
+                }
+                string skipStr = Api.Library_GetFileProperty(sourceFileUrl, FilePropertyType.SkipCount);
+                if (int.TryParse(skipStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sc))
+                {
+                    b.SkipCount = sc;
+                    b.HasSkipCount = true;
+                }
+            }
+            catch { }
+            return b;
+        }
+
+        private void OnSelectedFileChanged(string sourceFileUrl)
+        {
+            if (string.IsNullOrEmpty(sourceFileUrl)) return;
+            if (TryResolveSong(sourceFileUrl, out var song, allowPlaceholder: false))
+                CaptureLibraryTagSnapshot(sourceFileUrl, song);
         }
 
         private void OnTrackChanged(string sourceFileUrl, bool isPlayStateEvent)
@@ -61,6 +140,9 @@ namespace MusicBeePlugin
 
             if (!TryResolveSong(sourceFileUrl, out var song)) return;
 
+            CaptureLibraryTagSnapshot(sourceFileUrl, song);
+            _playBaselines[song.Id] = ReadPlayBaseline(sourceFileUrl);
+
             lock (_nowPlayingLock)
             {
                 if (isPlayStateEvent && string.Equals(_lastNowPlayingUrl, sourceFileUrl, StringComparison.OrdinalIgnoreCase))
@@ -69,19 +151,21 @@ namespace MusicBeePlugin
             }
 
             int targetSize = Settings != null ? Settings.ArtworkSize : 800;
+            var ct = ShutdownToken;
             Task.Run(() =>
             {
+                if (ct.IsCancellationRequested) return;
                 Subsonic.Scrobble(song.Id, submission: false);
 
                 try
                 {
                     var lyr = LyricsCache.Instance.GetOrFetchAsync(song, Subsonic).GetAwaiter().GetResult();
-                    if (lyr != null && lyr.HasLyrics)
+                    if (lyr != null && lyr.HasLyrics && !ct.IsCancellationRequested)
                         MusicBeeLyricsBridge.AttachLyrics(sourceFileUrl, lyr.Text, lyr.IsSynced, refreshActivePanel: true);
                 }
                 catch { }
 
-                if (MusicBeeArtworkBridge.IsAvailable)
+                if (MusicBeeArtworkBridge.IsAvailable && !ct.IsCancellationRequested)
                 {
                     string coverId = !string.IsNullOrEmpty(song.CanonicalCoverId) ? song.CanonicalCoverId : song.CoverArt;
                     if (string.IsNullOrEmpty(coverId))
@@ -94,7 +178,7 @@ namespace MusicBeePlugin
                             Api.MB_RefreshPanels?.Invoke();
                     }
                 }
-            });
+            }, ct);
 
             if (Api.NowPlayingList_GetCurrentIndex != null && Api.NowPlayingList_GetListFileUrl != null)
             {
@@ -134,6 +218,7 @@ namespace MusicBeePlugin
             if (Api.Library_SetFileTag == null || Api.Library_CommitTagsToFile == null || Api.Library_QueryFilesEx == null)
                 return;
 
+            var ct = ShutdownToken;
             Task.Run(() =>
             {
                 try
@@ -143,11 +228,12 @@ namespace MusicBeePlugin
 
                     foreach (var url in libFiles)
                     {
-                        if (!TryResolveSong(url, out var s)) continue;
+                        if (ct.IsCancellationRequested) return;
+                        if (!TryResolveSong(url, out var s, allowPlaceholder: false)) continue;
 
                         bool dirty = false;
                         string currentLove = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(url, MetaDataType.RatingLove) : "";
-                        bool isLovedInLibrary = string.Equals(currentLove, "L", StringComparison.OrdinalIgnoreCase);
+                        bool isLovedInLibrary = ParseLoveTag(currentLove);
                         if (isLovedInLibrary != s.Starred)
                         {
                             Api.Library_SetFileTag(url, MetaDataType.RatingLove, s.Starred ? "L" : "");
@@ -161,107 +247,117 @@ namespace MusicBeePlugin
                             dirty = true;
                         }
 
+                        _lastKnownTags[s.Id] = new TrackTagSnapshot { IsLoved = s.Starred, Stars = s.UserRating };
+
                         if (dirty)
                             Api.Library_CommitTagsToFile(url);
                     }
                 }
                 catch { }
-            });
+            }, ct);
         }
 
         private void OnPlayCountersChanged(string sourceFileUrl)
         {
             if (!TryResolveSong(sourceFileUrl, out var song)) return;
 
+            var current = ReadPlayBaseline(sourceFileUrl);
+            if (_playBaselines.TryGetValue(song.Id, out var prev))
+            {
+                bool skipIncreased = current.HasSkipCount && prev.HasSkipCount && current.SkipCount > prev.SkipCount;
+                bool playIncreased = current.HasPlayCount && prev.HasPlayCount && current.PlayCount > prev.PlayCount;
+                _playBaselines[song.Id] = current;
+
+                // MusicBee fires PlayCountersChanged on both plays and skips; do not scrobble skips.
+                if (skipIncreased && !playIncreased)
+                    return;
+            }
+            else
+            {
+                _playBaselines[song.Id] = current;
+            }
+
+            NavidromeCatalog.Instance.IncrementPlayCount(song.Id);
+            string label = FriendlyErrors.FormatTrackLabel(song);
+            var ct = ShutdownToken;
+
             Task.Run(() =>
             {
-                Subsonic.Scrobble(song.Id, submission: true);
-                Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: scrobbled track {song.Id}");
-            });
+                if (ct.IsCancellationRequested) return;
+                if (Subsonic.Scrobble(song.Id, submission: true))
+                    Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: scrobbled \"{label}\"");
+            }, ct);
         }
 
-        private void OnTagsChanged(string sourceFileUrl)
+        public static void EvaluateTagSyncDecision(
+            bool hasPreviousSnapshot,
+            TrackTagSnapshot prev,
+            bool serverStarred,
+            int serverRating,
+            string loveRaw,
+            string ratingRaw,
+            out bool shouldPushStar,
+            out bool newStarred,
+            out bool shouldPushRating,
+            out int newRating)
         {
-            if (!TryResolveSong(sourceFileUrl, out var song)) return;
+            shouldPushStar = false;
+            shouldPushRating = false;
+            newStarred = ParseLoveTag(loveRaw);
+            bool validRating = TryParseStarRating(ratingRaw, out newRating);
 
-            string love = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(sourceFileUrl, MetaDataType.RatingLove) : "";
-            string ratingStr = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(sourceFileUrl, MetaDataType.Rating) : "";
-
-            bool isLoved = string.Equals(love, "L", StringComparison.OrdinalIgnoreCase) ||
-                           string.Equals(love, "1", StringComparison.OrdinalIgnoreCase) ||
-                           string.Equals(love, "true", StringComparison.OrdinalIgnoreCase);
-
-            if (song.Starred != isLoved)
+            if (hasPreviousSnapshot)
             {
-                NavidromeCatalog.Instance.UpdateStarred(song.Id, isLoved);
-                Task.Run(() => Subsonic.Star(song.Id, isLoved));
+                if (newStarred != prev.IsLoved && newStarred != serverStarred)
+                    shouldPushStar = true;
+                if (validRating && newRating != prev.Stars && newRating != serverRating)
+                    shouldPushRating = true;
             }
-
-            if (TryParseStarRating(ratingStr, out int stars) && song.UserRating != stars)
+            else
             {
-                NavidromeCatalog.Instance.UpdateRating(song.Id, stars);
-                Task.Run(() => Subsonic.SetRating(song.Id, stars));
+                // Without a prior MusicBee snapshot, never wipe server state with blank fields.
+                if (newStarred && !serverStarred)
+                    shouldPushStar = true;
+                if (validRating && newRating > 0 && newRating != serverRating)
+                    shouldPushRating = true;
             }
         }
 
-        private void OnPlaylistNotification(string sourceFileUrl, NotificationType type)
+        private void OnTagsChanged(string sourceFileUrl, NotificationType type)
         {
-            if (string.IsNullOrEmpty(sourceFileUrl) || Subsonic == null)
+            if (!TryResolveSong(sourceFileUrl, out var song, allowPlaceholder: false))
                 return;
 
-            string plName = Path.GetFileNameWithoutExtension(sourceFileUrl);
-            if (string.IsNullOrEmpty(plName)) return;
+            string loveRaw = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(sourceFileUrl, MetaDataType.RatingLove) : "";
+            string ratingRaw = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(sourceFileUrl, MetaDataType.Rating) : "";
 
-            Task.Run(() =>
+            bool hasPrev = _lastKnownTags.TryGetValue(song.Id, out var prev);
+            EvaluateTagSyncDecision(
+                hasPrev,
+                prev,
+                song.Starred,
+                song.UserRating,
+                loveRaw,
+                ratingRaw,
+                out bool pushStar,
+                out bool isLoved,
+                out bool pushRating,
+                out int stars);
+
+            _lastKnownTags[song.Id] = new TrackTagSnapshot { IsLoved = isLoved, Stars = stars };
+
+            var ct = ShutdownToken;
+            if (pushStar)
             {
-                try
-                {
-                    if (type == NotificationType.PlaylistDeleted)
-                    {
-                        string plId = null;
-                        lock (CacheLock) { PlaylistLookup.TryGetValue(plName, out plId); }
-                        if (!string.IsNullOrEmpty(plId))
-                        {
-                            Subsonic.DeletePlaylist(plId);
-                            lock (CacheLock) { PlaylistLookup.Remove(plName); }
-                        }
-                        return;
-                    }
+                NavidromeCatalog.Instance.UpdateStarred(song.Id, isLoved);
+                Task.Run(() => { if (!ct.IsCancellationRequested) Subsonic.Star(song.Id, isLoved); }, ct);
+            }
 
-                    if (Api.Playlist_QueryFilesEx != null && Api.Playlist_QueryFilesEx(sourceFileUrl, out var filenames))
-                    {
-                        var songIds = new List<string>();
-                        if (filenames != null)
-                        {
-                            foreach (var fn in filenames)
-                            {
-                                if (TryResolveSong(fn, out var song))
-                                    songIds.Add(song.Id);
-                            }
-                        }
-
-                        string existingId = null;
-                        lock (CacheLock) { PlaylistLookup.TryGetValue(plName, out existingId); }
-
-                        if (songIds.Count > 0 || !string.IsNullOrEmpty(existingId))
-                        {
-                            if (type == NotificationType.PlaylistMoved && string.IsNullOrEmpty(existingId))
-                                return;
-
-                            string returnedId = Subsonic.CreatePlaylist(plName, songIds, existingId);
-                            if (!string.IsNullOrEmpty(returnedId))
-                            {
-                                lock (CacheLock) { PlaylistLookup[plName] = returnedId; }
-                                Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: synced playlist '{plName}' ({songIds.Count} tracks)");
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Api.MB_SetBackgroundTaskMessage?.Invoke($"Playlist sync error: {ex.Message}");
-                }
-            });
+            if (pushRating)
+            {
+                NavidromeCatalog.Instance.UpdateRating(song.Id, stars);
+                Task.Run(() => { if (!ct.IsCancellationRequested) Subsonic.SetRating(song.Id, stars); }, ct);
+            }
         }
     }
 }

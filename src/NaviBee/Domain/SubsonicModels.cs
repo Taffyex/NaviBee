@@ -1,10 +1,20 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Web;
 using System.Web.Script.Serialization;
 
 namespace MusicBeePlugin
 {
+    public class SubsonicPingInfo
+    {
+        public bool Ok { get; set; }
+        public string ServerType { get; set; } = "";
+        public string ServerVersion { get; set; } = "";
+        public string ApiVersion { get; set; } = "";
+        public bool OpenSubsonic { get; set; }
+    }
+
     public class SubsonicScanStatus
     {
         public bool Scanning { get; set; }
@@ -44,6 +54,12 @@ namespace MusicBeePlugin
         public bool Starred { get; set; }
         public int UserRating { get; set; }
         public bool IsDir { get; set; }
+        public string Created { get; set; } = "";
+        public string Played { get; set; } = "";
+        public string Comment { get; set; } = "";
+        public int SamplingRate { get; set; }
+        public int ChannelCount { get; set; }
+        public int BitDepth { get; set; }
 
         [ScriptIgnore]
         public string CachedRelativePath { get; set; }
@@ -194,7 +210,7 @@ namespace MusicBeePlugin
             string albArtist = !string.IsNullOrEmpty(song.AlbumArtist) ? song.AlbumArtist : (song.Artist ?? "");
             string cover = !string.IsNullOrEmpty(song.CanonicalCoverId) ? song.CanonicalCoverId : (song.CoverArt ?? "");
 
-            var tags = new[]
+            var tagList = new List<KeyValuePair<byte, string>>(24)
             {
                 new KeyValuePair<byte, string>((byte)FilePropertyType.Url, relPath),
                 new KeyValuePair<byte, string>((byte)MetaDataType.Artist, song.Artist ?? ""),
@@ -202,18 +218,33 @@ namespace MusicBeePlugin
                 new KeyValuePair<byte, string>((byte)MetaDataType.AlbumArtistRaw, albArtist),
                 new KeyValuePair<byte, string>((byte)MetaDataType.TrackTitle, song.Title ?? ""),
                 new KeyValuePair<byte, string>((byte)MetaDataType.Album, song.Album ?? ""),
-                new KeyValuePair<byte, string>((byte)MetaDataType.Year, song.Year > 0 ? song.Year.ToString() : ""),
-                new KeyValuePair<byte, string>((byte)MetaDataType.TrackNo, song.Track > 0 ? song.Track.ToString() : ""),
-                new KeyValuePair<byte, string>((byte)MetaDataType.DiscNo, song.DiscNumber > 0 ? song.DiscNumber.ToString() : "1"),
+                new KeyValuePair<byte, string>((byte)MetaDataType.Year, song.Year > 0 ? song.Year.ToString(CultureInfo.InvariantCulture) : ""),
+                new KeyValuePair<byte, string>((byte)MetaDataType.TrackNo, song.Track > 0 ? song.Track.ToString(CultureInfo.InvariantCulture) : ""),
+                new KeyValuePair<byte, string>((byte)MetaDataType.DiscNo, song.DiscNumber > 0 ? song.DiscNumber.ToString(CultureInfo.InvariantCulture) : "1"),
                 new KeyValuePair<byte, string>((byte)MetaDataType.Genre, song.Genre ?? ""),
-                new KeyValuePair<byte, string>((byte)FilePropertyType.Duration, (song.Duration * 1000).ToString()),
-                new KeyValuePair<byte, string>((byte)FilePropertyType.Bitrate, song.BitRate > 0 ? song.BitRate.ToString() : ""),
-                new KeyValuePair<byte, string>((byte)FilePropertyType.Size, song.Size > 0 ? song.Size.ToString() : ""),
+                new KeyValuePair<byte, string>((byte)FilePropertyType.Duration, (song.Duration * 1000).ToString(CultureInfo.InvariantCulture)),
+                new KeyValuePair<byte, string>((byte)FilePropertyType.Bitrate, song.BitRate > 0 ? song.BitRate.ToString(CultureInfo.InvariantCulture) : ""),
+                new KeyValuePair<byte, string>((byte)FilePropertyType.Size, song.Size > 0 ? song.Size.ToString(CultureInfo.InvariantCulture) : ""),
                 new KeyValuePair<byte, string>((byte)MetaDataType.Artwork, cover),
                 new KeyValuePair<byte, string>((byte)MetaDataType.RatingLove, song.Starred ? "L" : ""),
-                new KeyValuePair<byte, string>((byte)MetaDataType.Rating, song.UserRating > 0 ? (song.UserRating * 20).ToString() : ""),
+                new KeyValuePair<byte, string>((byte)MetaDataType.Rating, song.UserRating > 0 ? (song.UserRating * 20).ToString(CultureInfo.InvariantCulture) : ""),
                 new KeyValuePair<byte, string>((byte)MetaDataType.Custom16, song.Id ?? "")
             };
+
+            if (song.PlayCount > 0)
+                tagList.Add(new KeyValuePair<byte, string>((byte)FilePropertyType.PlayCount, song.PlayCount.ToString(CultureInfo.InvariantCulture)));
+            if (!string.IsNullOrWhiteSpace(song.Played) && DateTime.TryParse(song.Played, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var playedDt))
+                tagList.Add(new KeyValuePair<byte, string>((byte)FilePropertyType.LastPlayed, playedDt.ToLocalTime().ToString("o", CultureInfo.InvariantCulture)));
+            if (!string.IsNullOrWhiteSpace(song.Created) && DateTime.TryParse(song.Created, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var createdDt))
+                tagList.Add(new KeyValuePair<byte, string>((byte)FilePropertyType.DateAdded, createdDt.ToLocalTime().ToString("o", CultureInfo.InvariantCulture)));
+            if (song.SamplingRate > 0)
+                tagList.Add(new KeyValuePair<byte, string>((byte)FilePropertyType.SampleRate, song.SamplingRate.ToString(CultureInfo.InvariantCulture)));
+            if (song.ChannelCount > 0)
+                tagList.Add(new KeyValuePair<byte, string>((byte)FilePropertyType.Channels, song.ChannelCount.ToString(CultureInfo.InvariantCulture)));
+            if (!string.IsNullOrWhiteSpace(song.Comment))
+                tagList.Add(new KeyValuePair<byte, string>((byte)MetaDataType.Comment, song.Comment));
+
+            var tags = tagList.ToArray();
             song.CachedTags = tags;
             return tags;
         }

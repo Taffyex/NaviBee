@@ -19,10 +19,12 @@ namespace MusicBeePlugin
                 return;
             }
 
+            var ct = ShutdownToken;
             Task.Run(() =>
             {
                 try
                 {
+                    if (ct.IsCancellationRequested) return;
                     var songs = NavidromeCatalog.Instance.GetAllSongs();
                     if (songs.Count == 0)
                     {
@@ -49,14 +51,17 @@ namespace MusicBeePlugin
                         int done = 0;
                         int totalMissing = missing.Count;
 
-                        Parallel.ForEach(missing, new ParallelOptions { MaxDegreeOfParallelism = 4 }, cId =>
+                        Parallel.ForEach(missing, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, cId =>
                         {
+                            if (ct.IsCancellationRequested) return;
                             ArtworkCache.Instance.GetOrFetchLocalFilePath(cId, Subsonic, targetSize);
                             int c = Interlocked.Increment(ref done);
                             if (c % 10 == 0 || c == totalMissing)
                                 Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Caching missing artwork ({c}/{totalMissing})...");
                         });
                     }
+
+                    if (ct.IsCancellationRequested) return;
 
                     int linked = 0;
                     if (MusicBeeArtworkBridge.IsAvailable)
@@ -116,6 +121,7 @@ namespace MusicBeePlugin
                     if (showDialog)
                         ShowUiMessage(summary, "Navidrome Artwork Cache", MessageBoxIcon.Information);
                 }
+                catch (OperationCanceledException) { }
                 catch (Exception ex)
                 {
                     Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome artwork cache error: {ex.Message}");

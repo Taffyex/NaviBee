@@ -10,7 +10,6 @@ namespace MusicBeePlugin
     {
         internal const string DefaultServerUrl = "";
 
-
         public string ServerUrl { get; set; } = DefaultServerUrl;
         public string Username { get; set; } = "";
         public string EncryptedPassword { get; set; } = "";
@@ -21,6 +20,7 @@ namespace MusicBeePlugin
         public int AudioCacheMaxMb { get; set; } = 2048;   // 0 = Disabled, 512, 2048, 5120, 10240, -1 = Unlimited
         public bool PrefetchNextTrack { get; set; } = true;
         public bool SyncServerStarsToLibrary { get; set; } = true;
+        public bool PushPlaylistsToServer { get; set; } = false;
 
         [ScriptIgnore]
         public string PlainPassword
@@ -103,6 +103,10 @@ namespace MusicBeePlugin
 
         public bool Save(string filePath)
         {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return false;
+
+            string tmp = null;
             try
             {
                 string dir = Path.GetDirectoryName(filePath);
@@ -111,11 +115,30 @@ namespace MusicBeePlugin
 
                 var serializer = new JavaScriptSerializer();
                 string json = serializer.Serialize(this);
-                File.WriteAllText(filePath, json, Encoding.UTF8);
+                tmp = filePath + ".tmp_" + Guid.NewGuid().ToString("N");
+                File.WriteAllText(tmp, json, Encoding.UTF8);
+
+                if (File.Exists(filePath))
+                    File.Replace(tmp, filePath, null, ignoreMetadataErrors: true);
+                else
+                    File.Move(tmp, filePath);
+
+                tmp = null;
                 return true;
             }
             catch
             {
+                try
+                {
+                    if (!string.IsNullOrEmpty(tmp) && File.Exists(tmp))
+                    {
+                        if (File.Exists(filePath)) File.Delete(filePath);
+                        File.Move(tmp, filePath);
+                        return true;
+                    }
+                }
+                catch { }
+                try { if (!string.IsNullOrEmpty(tmp) && File.Exists(tmp)) File.Delete(tmp); } catch { }
                 return false;
             }
         }

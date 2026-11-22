@@ -12,23 +12,29 @@ namespace MusicBeePlugin
         internal static NavidromeSettings Settings;
         internal static SubsonicClient Subsonic;
         private static string SettingsFilePath;
+        private static string PersistentCacheRoot;
 
         public PluginInfo Initialise(IntPtr apiInterfacePtr)
         {
             Api = default(MusicBeeApiInterface);
             Api.Initialise(apiInterfacePtr);
             Instance = this;
+            ResetShutdownToken();
+            ResetSyncTracking();
             MusicBeeArtworkBridge.Initialize(Api);
             MusicBeeLyricsBridge.Initialize(Api);
 
             string persistentPath = Api.Setting_GetPersistentStoragePath != null
                 ? Api.Setting_GetPersistentStoragePath()
                 : AppDomain.CurrentDomain.BaseDirectory;
+            PersistentCacheRoot = persistentPath;
 
             NavidromeCatalog.Instance.ConfigureStorage(persistentPath);
             ArtworkCache.Instance.ConfigureStorage(persistentPath);
             AudioStreamCache.Instance.ConfigureStorage(persistentPath);
             LyricsCache.Instance.ConfigureStorage(persistentPath);
+            PlaylistLinkStore.Instance.ConfigureStorage(persistentPath);
+            PlaylistBackup.Instance.ConfigureStorage(persistentPath);
 
             SettingsFilePath = Path.Combine(persistentPath, "mb_NavidromePlugin.json");
             if (!File.Exists(SettingsFilePath))
@@ -52,60 +58,25 @@ namespace MusicBeePlugin
 
             NavidromeCatalog.Instance.LoadFromDisk();
 
-            if (!string.IsNullOrWhiteSpace(Settings.ServerUrl) && !string.IsNullOrWhiteSpace(Settings.Username))
-                StartConnectAndSync(isInitialConfigure: false);
-            else
-                Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Open Plugin Settings to configure server URL and credentials.");
-
             return new PluginInfo
             {
                 PluginInfoVersion = MusicBeeApiInfo.PluginInfoVersion,
                 Type = PluginType.Storage,
                 Name = "Navidrome Storage & Sync",
-                Description = "Navidrome & Subsonic cloud library streaming, audio/artwork caching, scrobbling, and playlist sync",
+                Description = "Navidrome & Subsonic cloud library streaming, audio/artwork caching, scrobbling, and safe playlist sync",
                 Author = "TaffyEx",
                 TargetApplication = "Navidrome",
                 VersionMajor = 1,
                 VersionMinor = 0,
-                Revision = 1,
+                Revision = 2,
                 MinInterfaceVersion = MusicBeeApiInfo.MinInterfaceVersion,
                 MinApiRevision = MusicBeeApiInfo.MinApiRevision,
                 ReceiveNotifications =
+                    ReceiveNotificationFlags.StartupOnly |
                     ReceiveNotificationFlags.PlayerEvents |
                     ReceiveNotificationFlags.TagEvents,
                 ConfigurationPanelHeight = 0
             };
-        }
-
-        private void StartConnectAndSync(bool isInitialConfigure)
-        {
-            Task.Run(() =>
-            {
-                bool ready = Subsonic.Ping();
-                SetConnectionReady(ready);
-                Api.MB_SendNotification?.Invoke(ready ? CallbackType.StorageReady : CallbackType.StorageFailed);
-                if (!ready) return;
-
-                Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome connected: ready for streaming & sync.");
-                WarmPlaylistLookup();
-
-                bool forceFull = !NavidromeCatalog.Instance.HasData || NavidromeCatalog.Instance.IsServerChanged(Subsonic);
-                bool catalogChanged = false;
-                bool synced = forceFull
-                    ? (catalogChanged = NavidromeCatalog.Instance.SyncFromServer(Subsonic, msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg), null, Settings.ArtworkSize))
-                    : NavidromeCatalog.Instance.SmartSyncIfNeeded(Subsonic, Settings.ArtworkSize, msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg), out catalogChanged);
-
-                if (catalogChanged && Settings.SyncServerStarsToLibrary)
-                    SyncStarsToMusicBeeLibrary();
-
-                if (isInitialConfigure)
-                    Refresh();
-
-                if (synced)
-                    ForceCacheAndLinkAllArtwork(false);
-                else
-                    Api.MB_RefreshPanels?.Invoke();
-            });
         }
 
         public bool Configure(IntPtr panelHandle)
@@ -124,26 +95,41 @@ namespace MusicBeePlugin
                 StartConnectAndSync(isInitialConfigure: true);
             }))
             {
-                return form.ShowDialog() == DialogResult.OK;
+                IWin32Window owner = GetMainOwnerWindow();
+                return (owner != null ? form.ShowDialog(owner) : form.ShowDialog()) == DialogResult.OK;
             }
         }
 
         public void Close(PluginCloseReason reason)
         {
-            ArtworkCache.Instance.StopPrewarm();
-            if (NavidromeCatalog.Instance.HasData)
-                NavidromeCatalog.Instance.SaveToDisk();
+            CancelBackgroundWork();
+            NavidromeCatalog.Instance.FlushPendingSave();
             _storageIcon?.Dispose();
             _storageIcon = null;
             Instance = null;
+        }
+
+        internal static Form GetMainOwnerWindow()
+        {
+            try
+            {
+                if (Application.OpenForms.Count > 0)
+                {
+                    Form f = Application.OpenForms[0];
+                    if (f != null && !f.IsDisposed && f.IsHandleCreated)
+                        return f;
+                }
+            }
+            catch { }
+            return null;
         }
 
         internal static void ShowUiMessage(string text, string caption, MessageBoxIcon icon)
         {
             try
             {
-                Form owner = Application.OpenForms.Count > 0 ? Application.OpenForms[0] : null;
-                if (owner != null && !owner.IsDisposed && owner.IsHandleCreated)
+                Form owner = GetMainOwnerWindow();
+                if (owner != null)
                 {
                     if (owner.InvokeRequired)
                         owner.BeginInvoke((Action)(() => MessageBox.Show(owner, text, caption, MessageBoxButtons.OK, icon)));
@@ -156,15 +142,44 @@ namespace MusicBeePlugin
             Api.MB_SetBackgroundTaskMessage?.Invoke($"{caption}: {text}");
         }
 
+        internal static bool AskUiConfirmation(string text, string caption)
+        {
+            try
+            {
+                Form owner = GetMainOwnerWindow();
+                if (owner != null)
+                {
+                    if (owner.InvokeRequired)
+                    {
+                        DialogResult res = DialogResult.No;
+                        owner.Invoke((Action)(() =>
+                        {
+                            res = MessageBox.Show(owner, text, caption, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                        }));
+                        return res == DialogResult.Yes;
+                    }
+                    return MessageBox.Show(owner, text, caption, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+                }
+                return MessageBox.Show(text, caption, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private void ForceResync()
         {
+            var ct = ShutdownToken;
             Task.Run(() =>
             {
                 Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Starting full catalog and artwork sync...");
                 bool ok = NavidromeCatalog.Instance.SyncFromServer(Subsonic, msg =>
                 {
                     Api.MB_SetBackgroundTaskMessage?.Invoke(msg);
-                }, null, Settings?.ArtworkSize ?? 800);
+                }, null, Settings?.ArtworkSize ?? 800, ct);
+
+                if (ct.IsCancellationRequested) return;
 
                 if (ok)
                 {
@@ -172,19 +187,19 @@ namespace MusicBeePlugin
                     WarmPlaylistLookup();
                     Refresh();
                     ForceCacheAndLinkAllArtwork(false);
-                    ShowUiMessage($"Navidrome catalog resynced successfully: {NavidromeCatalog.Instance.SongCount} tracks available.",
-                        "Navidrome Resync", MessageBoxIcon.Information);
+                    Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Resynced {NavidromeCatalog.Instance.SongCount:N0} tracks.");
                 }
                 else
                 {
-                    ShowUiMessage("Could not connect to Navidrome server to resync catalog.",
-                        "Navidrome Resync", MessageBoxIcon.Warning);
+                    string reason = FriendlyErrors.FormatException(Subsonic?.LastError);
+                    ShowUiMessage($"Could not resync catalog: {reason}", "Navidrome Resync", MessageBoxIcon.Warning);
                 }
-            });
+            }, ct);
         }
 
         private void UpgradeArtwork()
         {
+            var ct = ShutdownToken;
             Task.Run(() =>
             {
                 var distinct = NavidromeCatalog.Instance.GetDistinctAlbumCoverIds();
@@ -199,22 +214,35 @@ namespace MusicBeePlugin
                 {
                     Api.MB_SetBackgroundTaskMessage?.Invoke(msg);
                 }, () => ForceCacheAndLinkAllArtwork(false));
-            });
+            }, ct);
         }
 
         private void ClearAllCache()
         {
+            ArtworkCache.Instance.GetCacheStats(out _, out long artBytes);
+            AudioStreamCache.Instance.GetCacheStats(out _, out long audioBytes);
+            LyricsCache.Instance.GetCacheStats(out _, out long lyricsBytes);
+            long totalBytes = artBytes + audioBytes + lyricsBytes;
+
+            if (!AskUiConfirmation(
+                $"Delete {FriendlyErrors.FormatBytes(totalBytes)} of cached audio, artwork, and lyrics?\n\nPlaylist backups will not be deleted.",
+                "Clear Navidrome Cache"))
+            {
+                return;
+            }
+
             ArtworkCache.Instance.ClearDiskCache();
             AudioStreamCache.Instance.ClearCache();
             LyricsCache.Instance.ClearCache();
             Refresh();
-            ShowUiMessage("Audio, artwork, and lyrics caches cleared successfully.", "Navidrome Cache", MessageBoxIcon.Information);
+            Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Audio, artwork, and lyrics caches cleared.");
         }
 
         private void ImportAllToLibrary()
         {
             if (Api.Library_AddFileToLibrary == null) return;
 
+            var ct = ShutdownToken;
             Task.Run(() =>
             {
                 var songs = NavidromeCatalog.Instance.GetAllSongs();
@@ -231,6 +259,7 @@ namespace MusicBeePlugin
 
                 for (int i = 0; i < total; i++)
                 {
+                    if (ct.IsCancellationRequested) return;
                     var s = songs[i];
                     string rel = !string.IsNullOrEmpty(s.CachedRelativePath) ? s.CachedRelativePath : SubsonicUrlHelper.BuildRelativePath(s);
                     string url = "Navidrome:\\" + rel;
@@ -255,17 +284,28 @@ namespace MusicBeePlugin
                 Api.MB_RefreshPanels?.Invoke();
                 ForceCacheAndLinkAllArtwork(false);
 
-                ShowUiMessage($"Successfully added {added} Navidrome tracks to your MusicBee 'MUSIC' Library.",
-                    "Navidrome Library Sync", MessageBoxIcon.Information);
-            });
+                Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Added {added:N0} tracks to your MusicBee Music library.");
+            }, ct);
         }
 
         public void Uninstall()
         {
+            CancelBackgroundWork();
             try
             {
-                if (File.Exists(SettingsFilePath))
+                if (!string.IsNullOrEmpty(SettingsFilePath) && File.Exists(SettingsFilePath))
                     File.Delete(SettingsFilePath);
+            }
+            catch { }
+
+            try
+            {
+                if (!string.IsNullOrEmpty(PersistentCacheRoot))
+                {
+                    string cacheDir = Path.Combine(PersistentCacheRoot, "NavidromeCache");
+                    if (Directory.Exists(cacheDir))
+                        Directory.Delete(cacheDir, recursive: true);
+                }
             }
             catch { }
         }
@@ -274,7 +314,11 @@ namespace MusicBeePlugin
         {
             switch (type)
             {
+                case NotificationType.PluginStartup:
+                    OnPluginStartup();
+                    break;
                 case NotificationType.SelectedFileChanged:
+                    OnSelectedFileChanged(sourceFileUrl);
                     break;
                 case NotificationType.TrackChanged:
                     OnTrackChanged(sourceFileUrl, isPlayStateEvent: false);
@@ -287,7 +331,7 @@ namespace MusicBeePlugin
                     break;
                 case NotificationType.TagsChanged:
                 case NotificationType.RatingChanged:
-                    OnTagsChanged(sourceFileUrl);
+                    OnTagsChanged(sourceFileUrl, type);
                     break;
                 case NotificationType.PlaylistCreated:
                 case NotificationType.PlaylistUpdated:

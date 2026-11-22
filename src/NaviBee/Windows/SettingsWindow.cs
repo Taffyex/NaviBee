@@ -8,17 +8,22 @@ namespace MusicBeePlugin
     {
         private readonly NavidromeSettings _settings;
         private readonly Action<NavidromeSettings> _onSave;
+        private ToolTip _toolTip;
 
         private TextBox _txtServerUrl;
         private TextBox _txtUsername;
         private TextBox _txtPassword;
+        private CheckBox _chkShowPassword;
         private ComboBox _cmbAuthMethod;
         private ComboBox _cmbTranscode;
         private ComboBox _cmbArtworkSize;
         private ComboBox _cmbAudioCache;
         private CheckBox _chkPrefetch;
         private CheckBox _chkSyncStars;
+        private CheckBox _chkPushPlaylists;
         private Label _lblCacheStats;
+        private Label _lblBackupStats;
+        private LinkLabel _lnkOpenBackups;
         private Button _btnForceLink;
         private Button _btnUpgradeArtwork;
         private Button _btnClearCache;
@@ -37,23 +42,54 @@ namespace MusicBeePlugin
             RefreshStats();
         }
 
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                _toolTip?.Dispose();
+            base.Dispose(disposing);
+        }
+
+        private void AddSectionDivider(string title, int top)
+        {
+            var lbl = new Label
+            {
+                Text = title,
+                AutoSize = true,
+                UseMnemonic = false,
+                Location = new Point(14, top),
+                ForeColor = Color.FromArgb(70, 82, 96),
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold, GraphicsUnit.Point)
+            };
+            Controls.Add(lbl);
+
+            int textW = TextRenderer.MeasureText(title, lbl.Font, Size.Empty, TextFormatFlags.NoPrefix).Width;
+            int lineX = 14 + textW + 6;
+            int lineW = Math.Max(40, 520 - lineX);
+            var line = new Panel
+            {
+                Location = new Point(lineX, top + 8),
+                Size = new Size(lineW, 1),
+                BackColor = SystemColors.ControlDark
+            };
+            Controls.Add(line);
+        }
+
         private void InitializeComponent()
         {
-            Text = "Navidrome Storage & Sync Settings";
-            const int formHeight = 434;
-            ClientSize = new Size(524, formHeight);
+            _toolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 300, ReshowDelay = 200 };
+            Text = "NaviBee — Navidrome Storage & Sync Settings";
             AutoScaleMode = AutoScaleMode.Font;
             FormBorderStyle = FormBorderStyle.FixedDialog;
-            StartPosition = FormStartPosition.CenterScreen;
+            StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = false;
             MinimizeBox = false;
             ShowIcon = false;
             Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
             int y = 14;
-            const int lblW = 140;
-            const int ctrlX = 160;
-            const int ctrlW = 344;
+            const int lblW = 136;
+            const int ctrlX = 158;
+            const int ctrlW = 362;
             const int rowH = 30;
 
             Label CreateLabel(string text, int top) =>
@@ -61,6 +97,8 @@ namespace MusicBeePlugin
 
             Controls.Add(CreateLabel("Navidrome URL:", y));
             _txtServerUrl = new TextBox { Location = new Point(ctrlX, y), Size = new Size(ctrlW, 23) };
+            _txtServerUrl.Leave += (s, e) => NormalizeUrlField();
+            _toolTip.SetToolTip(_txtServerUrl, "Your Navidrome or Subsonic server URL (e.g. https://music.example.com or http://localhost:4533).");
             Controls.Add(_txtServerUrl);
             y += rowH;
 
@@ -70,8 +108,12 @@ namespace MusicBeePlugin
             y += rowH;
 
             Controls.Add(CreateLabel("Password:", y));
-            _txtPassword = new TextBox { Location = new Point(ctrlX, y), Size = new Size(ctrlW, 23), PasswordChar = '•' };
+            _txtPassword = new TextBox { Location = new Point(ctrlX, y), Size = new Size(ctrlW - 70, 23), PasswordChar = '•' };
             Controls.Add(_txtPassword);
+
+            _chkShowPassword = new CheckBox { Text = "Show", Location = new Point(ctrlX + ctrlW - 62, y + 1), Size = new Size(64, 22) };
+            _chkShowPassword.CheckedChanged += (s, e) => _txtPassword.PasswordChar = _chkShowPassword.Checked ? '\0' : '•';
+            Controls.Add(_chkShowPassword);
             y += rowH;
 
             Controls.Add(CreateLabel("Auth Method:", y));
@@ -86,9 +128,8 @@ namespace MusicBeePlugin
             Controls.Add(_cmbTranscode);
             y += rowH + 6;
 
-            var cacheSep = new Label { Text = "── Caching && Performance ───────────────────────────────", Location = new Point(14, y), Size = new Size(494, 18), ForeColor = Color.Gray };
-            Controls.Add(cacheSep);
-            y += 22;
+            AddSectionDivider("Caching & Sync", y);
+            y += 24;
 
             Controls.Add(CreateLabel("Artwork Quality:", y));
             _cmbArtworkSize = new ComboBox { Location = new Point(ctrlX, y), Size = new Size(ctrlW, 23), DropDownStyle = ComboBoxStyle.DropDownList };
@@ -108,40 +149,57 @@ namespace MusicBeePlugin
 
             _chkSyncStars = new CheckBox { Text = "Sync Navidrome stars && ratings to local MusicBee library", Location = new Point(ctrlX, y), Size = new Size(ctrlW, 22) };
             Controls.Add(_chkSyncStars);
-            y += 26;
+            y += 24;
 
-            _lblCacheStats = new Label { Location = new Point(14, y), Size = new Size(494, 20), ForeColor = Color.DarkSlateGray, Text = "Cache stats: calculating..." };
+            _chkPushPlaylists = new CheckBox { Text = "Push MusicBee playlist changes to Navidrome (safe mode)", Location = new Point(ctrlX, y), Size = new Size(ctrlW, 22) };
+            _toolTip.SetToolTip(_chkPushPlaylists,
+                "Opt-in. Never deletes server playlists, never sends empty playlists,\n" +
+                "never overwrites playlists not created by NaviBee, skips playlists\n" +
+                "owned by other users, and saves a JSON backup before every update.");
+            Controls.Add(_chkPushPlaylists);
+            y += 28;
+
+            _lblCacheStats = new Label { Location = new Point(14, y), Size = new Size(506, 20), ForeColor = Color.DarkSlateGray, Text = "Cache stats: calculating..." };
             Controls.Add(_lblCacheStats);
-            y += 22;
+            y += 21;
 
-            _btnForceLink = new Button { Text = "Cache && Link Art", Location = new Point(ctrlX, y), Size = new Size(136, 26) };
+            _lblBackupStats = new Label { Location = new Point(14, y), Size = new Size(340, 20), ForeColor = Color.DarkSlateGray, Text = "Playlist backups: 0 files" };
+            Controls.Add(_lblBackupStats);
+
+            _lnkOpenBackups = new LinkLabel { Text = "Open backups folder", Location = new Point(360, y), Size = new Size(160, 20), TextAlign = ContentAlignment.MiddleRight };
+            _lnkOpenBackups.LinkClicked += (s, e) => OpenBackupsFolder();
+            Controls.Add(_lnkOpenBackups);
+            y += 24;
+
+            _btnForceLink = new Button { Text = "Cache && Link Art", Location = new Point(ctrlX, y), Size = new Size(140, 26) };
             _btnForceLink.Click += (s, e) => Plugin.Instance?.ForceCacheAndLinkAllArtwork(true);
             Controls.Add(_btnForceLink);
 
-            _btnUpgradeArtwork = new Button { Text = "Re-Cache High-Res", Location = new Point(ctrlX + 142, y), Size = new Size(134, 26) };
+            _btnUpgradeArtwork = new Button { Text = "Re-Cache High-Res", Location = new Point(ctrlX + 146, y), Size = new Size(140, 26) };
             _btnUpgradeArtwork.Click += (s, e) => UpgradeArtwork();
             Controls.Add(_btnUpgradeArtwork);
 
-            _btnClearCache = new Button { Text = "Clear", Location = new Point(ctrlX + 282, y), Size = new Size(62, 26) };
+            _btnClearCache = new Button { Text = "Clear", Location = new Point(ctrlX + 292, y), Size = new Size(70, 26) };
             _btnClearCache.Click += (s, e) => ClearCaches();
             Controls.Add(_btnClearCache);
             y += rowH + 6;
 
-
-            _lblStatus = new Label { Location = new Point(14, y), Size = new Size(494, 34), Text = "", TextAlign = ContentAlignment.MiddleLeft };
+            _lblStatus = new Label { Location = new Point(14, y), Size = new Size(506, 36), Text = "", TextAlign = ContentAlignment.MiddleLeft };
             Controls.Add(_lblStatus);
-            y += 38;
+            y += 40;
 
-            _btnTestNavidrome = new Button { Text = "Test Connection", Location = new Point(14, y), Size = new Size(130, 28) };
+            _btnTestNavidrome = new Button { Text = "Test Connection", Location = new Point(14, y), Size = new Size(132, 28) };
             _btnTestNavidrome.Click += async (s, e) => await TestConnectionAsync();
             Controls.Add(_btnTestNavidrome);
 
-            _btnSave = new Button { Text = "Save", Location = new Point(334, y), Size = new Size(80, 28), DialogResult = DialogResult.OK };
+            _btnSave = new Button { Text = "Save", Location = new Point(350, y), Size = new Size(80, 28), DialogResult = DialogResult.OK };
             _btnSave.Click += (s, e) => SaveValues();
             Controls.Add(_btnSave);
 
-            _btnCancel = new Button { Text = "Cancel", Location = new Point(424, y), Size = new Size(80, 28), DialogResult = DialogResult.Cancel };
+            _btnCancel = new Button { Text = "Cancel", Location = new Point(440, y), Size = new Size(80, 28), DialogResult = DialogResult.Cancel };
             Controls.Add(_btnCancel);
+
+            ClientSize = new Size(536, y + 42);
             AcceptButton = _btnSave;
             CancelButton = _btnCancel;
         }

@@ -36,7 +36,7 @@ namespace MusicBeePlugin
             get
             {
                 var s = _settings;
-                return s?.ServerUrl?.Trim().TrimEnd('/') ?? "";
+                return FriendlyErrors.NormalizeServerUrl(s?.ServerUrl);
             }
         }
 
@@ -50,7 +50,7 @@ namespace MusicBeePlugin
         internal static void ConfigureRequest(HttpWebRequest req)
         {
             if (req == null) return;
-            req.UserAgent = "NaviBee/1.0";
+            req.UserAgent = "NaviBee/1.0.2";
             try
             {
                 var sp = ServicePointManager.FindServicePoint(req.RequestUri);
@@ -104,13 +104,13 @@ namespace MusicBeePlugin
 
         private static string GetBaseUrlOrThrow(NavidromeSettings settings)
         {
-            string raw = settings?.ServerUrl?.Trim() ?? "";
-            if (string.IsNullOrEmpty(raw))
+            string normalized = FriendlyErrors.NormalizeServerUrl(settings?.ServerUrl);
+            if (string.IsNullOrEmpty(normalized))
                 throw new InvalidOperationException("Navidrome server URL is not configured.");
-            if (!raw.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !raw.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            if (!normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Server URL must start with http:// or https://.");
-            return raw.TrimEnd('/');
+            return normalized;
         }
 
         private static string BuildAuthParams(NavidromeSettings settings, bool includeJson = true)
@@ -195,11 +195,13 @@ namespace MusicBeePlugin
             }
         }
 
-        public bool Ping()
+        public SubsonicPingInfo PingWithInfo()
         {
             var resp = SendRequest("ping");
-            return resp != null && string.Equals(SubsonicJsonParser.GetString(resp, "status"), "ok", StringComparison.OrdinalIgnoreCase);
+            return SubsonicJsonParser.ParsePingInfo(resp);
         }
+
+        public bool Ping() => PingWithInfo().Ok;
 
         public Uri GetStreamUri(string songId, int maxBitrate = 0)
         {
@@ -209,7 +211,7 @@ namespace MusicBeePlugin
             string url = $"{baseUrl}/rest/stream?{auth}&id={Uri.EscapeDataString(songId)}";
             int br = maxBitrate > 0 ? maxBitrate : (settings?.TranscodeBitrate ?? 0);
             if (br > 0)
-                url += $"&maxBitRate={br}";
+                url += $"&maxBitRate={br}&estimateContentLength=true";
             return new Uri(url);
         }
 

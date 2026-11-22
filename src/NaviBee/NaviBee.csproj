@@ -12,7 +12,7 @@
     <RootNamespace>MusicBeePlugin</RootNamespace>
     <Authors>TaffyEx</Authors>
     <Product>NaviBee</Product>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <OutputPath>bin\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -32,6 +32,7 @@
     <Compile Include="Domain\SubsonicModels.cs" />
     <Compile Include="Domain\SubsonicJsonParser.cs" />
     <Compile Include="Domain\SubsonicLyrics.cs" />
+    <Compile Include="Services\FriendlyErrors.cs" />
     <Compile Include="Services\SubsonicClient.cs" />
     <Compile Include="Services\SubsonicClient.Queries.cs" />
     <Compile Include="Services\ArtworkCache.cs" />
@@ -39,15 +40,20 @@
     <Compile Include="Services\LyricsCache.cs" />
     <Compile Include="Services\NavidromeCatalog.cs" />
     <Compile Include="Services\NavidromeCatalog.Index.cs" />
+    <Compile Include="Services\NavidromeCatalog.Starred.cs" />
+    <Compile Include="Services\PlaylistLinkStore.cs" />
+    <Compile Include="Services\PlaylistBackup.cs" />
     <Compile Include="Services\MusicBeeArtworkBridge.cs" />
     <Compile Include="Services\MusicBeeArtworkBridge.Discovery.cs" />
     <Compile Include="Services\MusicBeeLyricsBridge.cs" />
     <Compile Include="Windows\SettingsWindow.cs" />
     <Compile Include="Windows\SettingsWindow.Actions.cs" />
     <Compile Include="Plugin.Lifecycle.cs" />
+    <Compile Include="Plugin.Startup.cs" />
     <Compile Include="Plugin.Storage.cs" />
     <Compile Include="Plugin.Storage.Stream.cs" />
     <Compile Include="Plugin.Sync.cs" />
+    <Compile Include="Plugin.Playlists.cs" />
     <Compile Include="Plugin.Artwork.cs" />
     <Compile Include="MusicBeeInterface.cs" />
   </ItemGroup>

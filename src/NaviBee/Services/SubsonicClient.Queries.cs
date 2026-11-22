@@ -73,12 +73,35 @@ namespace MusicBeePlugin
 
         public List<SubsonicSong> GetPlaylist(string playlistId)
         {
+            return GetPlaylistWithMeta(playlistId, out _) ?? new List<SubsonicSong>();
+        }
+
+        public List<SubsonicSong> GetPlaylistWithMeta(string playlistId, out SubsonicPlaylist meta)
+        {
+            meta = null;
             var resp = SendRequest("getPlaylist", new Dictionary<string, string> { { "id", playlistId } });
+            if (resp == null) return null;
+
             var result = new List<SubsonicSong>();
-            if (resp != null && resp.TryGetValue("playlist", out var plObj) && plObj is IDictionary<string, object> playlist)
+            if (resp.TryGetValue("playlist", out var plObj) && plObj is IDictionary<string, object> playlist)
             {
+                meta = SubsonicJsonParser.ParsePlaylist(playlist);
                 if (playlist.TryGetValue("entry", out var entryListObj))
                     result.AddRange(SubsonicJsonParser.CastList(entryListObj, SubsonicJsonParser.ParseSong));
+            }
+            return result;
+        }
+
+        public List<SubsonicSong> GetStarred2()
+        {
+            var resp = SendRequest("getStarred2", null, 20000);
+            if (resp == null) return null;
+
+            var result = new List<SubsonicSong>();
+            if (resp.TryGetValue("starred2", out var stObj) && stObj is IDictionary<string, object> starred)
+            {
+                if (starred.TryGetValue("song", out var songListObj))
+                    result.AddRange(SubsonicJsonParser.CastList(songListObj, SubsonicJsonParser.ParseSong));
             }
             return result;
         }

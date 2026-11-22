@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -16,6 +18,15 @@ namespace MusicBeePlugin
                 else action();
             }
             catch { }
+        }
+
+        private void NormalizeUrlField()
+        {
+            string raw = _txtServerUrl.Text;
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            string normalized = FriendlyErrors.NormalizeServerUrl(raw);
+            if (!string.Equals(raw, normalized, StringComparison.Ordinal))
+                _txtServerUrl.Text = normalized;
         }
 
         private void LoadValues()
@@ -54,7 +65,7 @@ namespace MusicBeePlugin
 
             _chkPrefetch.Checked = _settings.PrefetchNextTrack;
             _chkSyncStars.Checked = _settings.SyncServerStarsToLibrary;
-
+            _chkPushPlaylists.Checked = _settings.PushPlaylistsToServer;
 
             if (string.IsNullOrWhiteSpace(_txtServerUrl.Text))
             {
@@ -65,7 +76,8 @@ namespace MusicBeePlugin
 
         private void SaveValues()
         {
-            _settings.ServerUrl = _txtServerUrl.Text.Trim();
+            NormalizeUrlField();
+            _settings.ServerUrl = FriendlyErrors.NormalizeServerUrl(_txtServerUrl.Text);
             _settings.Username = _txtUsername.Text.Trim();
             _settings.PlainPassword = _txtPassword.Text;
             _settings.AuthMethod = _cmbAuthMethod.SelectedItem?.ToString() ?? "token";
@@ -99,7 +111,7 @@ namespace MusicBeePlugin
 
             _settings.PrefetchNextTrack = _chkPrefetch.Checked;
             _settings.SyncServerStarsToLibrary = _chkSyncStars.Checked;
-
+            _settings.PushPlaylistsToServer = _chkPushPlaylists.Checked;
 
             _onSave?.Invoke(_settings);
             Close();
@@ -109,12 +121,43 @@ namespace MusicBeePlugin
         {
             ArtworkCache.Instance.GetCacheStats(out int artCount, out long artBytes);
             AudioStreamCache.Instance.GetCacheStats(out int audioCount, out long audioBytes);
-            LyricsCache.Instance.GetCacheStats(out int lyricsCount, out long lyricsBytes);
-            double artMb = artBytes / (1024.0 * 1024.0);
-            double audioMb = audioBytes / (1024.0 * 1024.0);
-            string text = $"Cache: {artCount} art ({artMb:F1} MB) | {audioCount} audio ({audioMb:F1} MB) | {lyricsCount} lyrics";
-            if (IsHandleCreated && InvokeRequired) SafeUi(() => _lblCacheStats.Text = text);
-            else _lblCacheStats.Text = text;
+            LyricsCache.Instance.GetCacheStats(out int lyricsCount, out _);
+            PlaylistBackup.Instance.GetBackupStats(out int backupCount, out long backupBytes);
+
+            string cacheText = $"Cache: {artCount} art ({FriendlyErrors.FormatBytes(artBytes)}) | {audioCount} audio ({FriendlyErrors.FormatBytes(audioBytes)}) | {lyricsCount} lyrics";
+            string backupText = backupCount > 0
+                ? $"Playlist backups: {backupCount} {(backupCount == 1 ? "file" : "files")} ({FriendlyErrors.FormatBytes(backupBytes)})"
+                : "Playlist backups: none yet";
+
+            if (IsHandleCreated && InvokeRequired)
+            {
+                SafeUi(() =>
+                {
+                    _lblCacheStats.Text = cacheText;
+                    _lblBackupStats.Text = backupText;
+                });
+            }
+            else
+            {
+                _lblCacheStats.Text = cacheText;
+                _lblBackupStats.Text = backupText;
+            }
+        }
+
+        private void OpenBackupsFolder()
+        {
+            try
+            {
+                string dir = PlaylistBackup.Instance.BackupDirectory;
+                if (string.IsNullOrWhiteSpace(dir)) return;
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                Process.Start(new ProcessStartInfo { FileName = dir, UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                _lblStatus.ForeColor = Color.DarkRed;
+                _lblStatus.Text = $"Could not open backups folder: {ex.Message}";
+            }
         }
 
         private void UpgradeArtwork()
@@ -145,7 +188,7 @@ namespace MusicBeePlugin
             {
                 client = new SubsonicClient(new NavidromeSettings
                 {
-                    ServerUrl = _txtServerUrl.Text.Trim(),
+                    ServerUrl = FriendlyErrors.NormalizeServerUrl(_txtServerUrl.Text),
                     Username = _txtUsername.Text.Trim(),
                     PlainPassword = _txtPassword.Text,
                     AuthMethod = _cmbAuthMethod.SelectedItem?.ToString() ?? "token",
@@ -168,6 +211,22 @@ namespace MusicBeePlugin
 
         private void ClearCaches()
         {
+            ArtworkCache.Instance.GetCacheStats(out _, out long artBytes);
+            AudioStreamCache.Instance.GetCacheStats(out _, out long audioBytes);
+            LyricsCache.Instance.GetCacheStats(out _, out long lyricsBytes);
+            long totalBytes = artBytes + audioBytes + lyricsBytes;
+
+            var result = MessageBox.Show(
+                this,
+                $"Delete {FriendlyErrors.FormatBytes(totalBytes)} of cached audio, artwork, and lyrics?\n\nPlaylist backups will not be deleted.",
+                "Clear Navidrome Cache",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+
+            if (result != DialogResult.Yes)
+                return;
+
             ArtworkCache.Instance.ClearDiskCache();
             AudioStreamCache.Instance.ClearCache();
             LyricsCache.Instance.ClearCache();
@@ -178,6 +237,7 @@ namespace MusicBeePlugin
 
         private async Task TestConnectionAsync()
         {
+            NormalizeUrlField();
             _btnTestNavidrome.Enabled = false;
             _lblStatus.ForeColor = Color.Black;
             _lblStatus.Text = "Pinging Navidrome server...";
@@ -186,25 +246,43 @@ namespace MusicBeePlugin
             {
                 var testSettings = new NavidromeSettings
                 {
-                    ServerUrl = _txtServerUrl.Text.Trim(),
+                    ServerUrl = FriendlyErrors.NormalizeServerUrl(_txtServerUrl.Text),
                     Username = _txtUsername.Text.Trim(),
                     PlainPassword = _txtPassword.Text,
                     AuthMethod = _cmbAuthMethod.SelectedItem?.ToString() ?? "token"
                 };
 
                 var client = new SubsonicClient(testSettings);
-                bool ok = await Task.Run(() => client.Ping());
+                var result = await Task.Run(() =>
+                {
+                    var ping = client.PingWithInfo();
+                    SubsonicScanStatus scan = ping.Ok ? client.GetScanStatus() : null;
+                    return Tuple.Create(ping, scan, client.LastError);
+                });
                 if (IsDisposed) return;
 
-                if (ok)
+                var pingInfo = result.Item1;
+                var scanInfo = result.Item2;
+                var lastErr = result.Item3;
+
+                if (pingInfo != null && pingInfo.Ok)
                 {
+                    string serverName = !string.IsNullOrWhiteSpace(pingInfo.ServerType)
+                        ? char.ToUpperInvariant(pingInfo.ServerType[0]) + pingInfo.ServerType.Substring(1)
+                        : "Subsonic";
+                    string version = !string.IsNullOrWhiteSpace(pingInfo.ServerVersion)
+                        ? " " + pingInfo.ServerVersion
+                        : (!string.IsNullOrWhiteSpace(pingInfo.ApiVersion) ? " API " + pingInfo.ApiVersion : "");
+                    string trackCount = scanInfo != null && scanInfo.Count > 0
+                        ? $" \u00B7 {scanInfo.Count:N0} tracks"
+                        : "";
+
                     _lblStatus.ForeColor = Color.DarkGreen;
-                    _lblStatus.Text = "Connection successful! Navidrome is reachable.";
+                    _lblStatus.Text = $"\u2713 Connected to {serverName}{version}{trackCount}";
                 }
                 else
                 {
-                    string detail = client.LastError?.Message ?? "Check URL, username and password.";
-                    if (detail.Length > 110) detail = detail.Substring(0, 107) + "...";
+                    string detail = FriendlyErrors.FormatException(lastErr);
                     _lblStatus.ForeColor = Color.DarkRed;
                     _lblStatus.Text = $"Connection failed: {detail}";
                 }
@@ -214,7 +292,7 @@ namespace MusicBeePlugin
                 if (!IsDisposed)
                 {
                     _lblStatus.ForeColor = Color.DarkRed;
-                    _lblStatus.Text = $"Connection failed: {ex.Message}";
+                    _lblStatus.Text = $"Connection failed: {FriendlyErrors.FormatException(ex)}";
                 }
             }
             finally

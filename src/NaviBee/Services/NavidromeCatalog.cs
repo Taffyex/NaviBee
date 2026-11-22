@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
@@ -33,6 +34,9 @@ namespace MusicBeePlugin
         private string _metaFilePath;
         private readonly object _lock = new object();
         private readonly object _diskWriteLock = new object();
+        private readonly object _saveTimerLock = new object();
+        private Timer _debouncedSaveTimer;
+        private volatile bool _hasPendingSave;
         private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer { MaxJsonLength = 100 * 1024 * 1024 };
 
         private List<SubsonicSong> _allSongs = new List<SubsonicSong>();
@@ -103,6 +107,41 @@ namespace MusicBeePlugin
             }
         }
 
+        public void ScheduleSaveToDisk(int delayMs = 3000)
+        {
+            _hasPendingSave = true;
+            lock (_saveTimerLock)
+            {
+                if (_debouncedSaveTimer == null)
+                {
+                    _debouncedSaveTimer = new Timer(_ =>
+                    {
+                        if (!_hasPendingSave) return;
+                        _hasPendingSave = false;
+                        SaveToDisk();
+                    }, null, delayMs, Timeout.Infinite);
+                }
+                else
+                {
+                    _debouncedSaveTimer.Change(delayMs, Timeout.Infinite);
+                }
+            }
+        }
+
+        public void FlushPendingSave()
+        {
+            lock (_saveTimerLock)
+            {
+                _debouncedSaveTimer?.Dispose();
+                _debouncedSaveTimer = null;
+            }
+            if (_hasPendingSave || HasData)
+            {
+                _hasPendingSave = false;
+                SaveToDisk();
+            }
+        }
+
         public void SaveToDisk()
         {
             List<SubsonicSong> snapshot;
@@ -118,6 +157,7 @@ namespace MusicBeePlugin
                 metaPath = _metaFilePath;
             }
 
+            _hasPendingSave = false;
             WriteSnapshotToDisk(snapshot, metaSnapshot, catPath, metaPath);
         }
 
@@ -129,15 +169,31 @@ namespace MusicBeePlugin
                 try
                 {
                     string json = _serializer.Serialize(snapshot);
-                    string tmp = catPath + ".tmp_" + Guid.NewGuid().ToString("N");
-                    File.WriteAllText(tmp, json, Encoding.UTF8);
-                    if (File.Exists(catPath)) File.Delete(catPath);
-                    File.Move(tmp, catPath);
+                    WriteTextAtomic(catPath, json);
 
                     string metaJson = _serializer.Serialize(metaSnapshot);
-                    File.WriteAllText(metaPath, metaJson, Encoding.UTF8);
+                    WriteTextAtomic(metaPath, metaJson);
                 }
                 catch { }
+            }
+        }
+
+        private static void WriteTextAtomic(string targetPath, string content)
+        {
+            string tmp = targetPath + ".tmp_" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.WriteAllText(tmp, content, Encoding.UTF8);
+                if (File.Exists(targetPath)) File.Delete(targetPath);
+                File.Move(tmp, targetPath);
+                tmp = null;
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(tmp))
+                {
+                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                }
             }
         }
 
@@ -151,10 +207,10 @@ namespace MusicBeePlugin
             }
         }
 
-        public bool SmartSyncIfNeeded(SubsonicClient client, int artworkSize, Action<string> progressCallback, out bool catalogChanged)
+        public bool SmartSyncIfNeeded(SubsonicClient client, int artworkSize, Action<string> progressCallback, out bool catalogChanged, CancellationToken ct = default)
         {
             catalogChanged = false;
-            if (client == null) return false;
+            if (client == null || ct.IsCancellationRequested) return false;
 
             var scanStatus = client.GetScanStatus();
             if (scanStatus != null && HasData)
@@ -175,18 +231,18 @@ namespace MusicBeePlugin
             }
 
             catalogChanged = true;
-            return SyncFromServer(client, progressCallback, scanStatus, artworkSize);
+            return SyncFromServer(client, progressCallback, scanStatus, artworkSize, ct);
         }
 
-        public bool SyncFromServer(SubsonicClient client, Action<string> progressCallback, SubsonicScanStatus scanStatus = null, int artworkSize = 800)
+        public bool SyncFromServer(SubsonicClient client, Action<string> progressCallback, SubsonicScanStatus scanStatus = null, int artworkSize = 800, CancellationToken ct = default)
         {
-            if (client == null) return false;
+            if (client == null || ct.IsCancellationRequested) return false;
             progressCallback?.Invoke("Navidrome: Syncing library catalog...");
             var fetched = new List<SubsonicSong>();
             int offset = 0;
             const int pageSize = 1000;
 
-            while (true)
+            while (!ct.IsCancellationRequested)
             {
                 var page = client.SearchSongs(pageSize, offset);
                 if (page == null || page.Count == 0) break;
@@ -196,6 +252,8 @@ namespace MusicBeePlugin
                 offset += page.Count;
             }
 
+            if (ct.IsCancellationRequested) return false;
+
             // Fallback for older Subsonic/Airsonic servers where search3?query= returns empty
             if (fetched.Count == 0)
             {
@@ -204,7 +262,7 @@ namespace MusicBeePlugin
                 {
                     fetched.AddRange(quoted);
                     int qOffset = quoted.Count;
-                    while (quoted.Count >= pageSize)
+                    while (quoted.Count >= pageSize && !ct.IsCancellationRequested)
                     {
                         quoted = client.SearchSongs(pageSize, qOffset, "\"\"");
                         if (quoted == null || quoted.Count == 0) break;
@@ -214,23 +272,28 @@ namespace MusicBeePlugin
                 }
             }
 
+            if (ct.IsCancellationRequested) return false;
+
             if (fetched.Count == 0)
             {
                 int albOffset = 0;
                 const int albPage = 500;
-                while (true)
+                while (!ct.IsCancellationRequested)
                 {
                     var albums = client.GetAlbumList2("alphabeticalByName", albPage, albOffset);
                     if (albums == null || albums.Count == 0) break;
                     foreach (var alb in albums)
+                    {
+                        if (ct.IsCancellationRequested) return false;
                         fetched.AddRange(client.GetAlbum(alb.Id));
+                    }
                     progressCallback?.Invoke($"Navidrome: Synced {fetched.Count} tracks...");
                     if (albums.Count < albPage) break;
                     albOffset += albums.Count;
                 }
             }
 
-            if (fetched.Count == 0) return false;
+            if (fetched.Count == 0 || ct.IsCancellationRequested) return false;
             if (scanStatus == null) scanStatus = client.GetScanStatus();
 
             lock (_lock)
@@ -301,51 +364,6 @@ namespace MusicBeePlugin
                 _byId.TryGetValue(id, out var s);
                 return s;
             }
-        }
-
-        public void UpdateStarred(string songId, bool starred)
-        {
-            if (string.IsNullOrEmpty(songId)) return;
-            bool changed = false;
-            lock (_lock)
-            {
-                if (_byId.TryGetValue(songId, out var s))
-                {
-                    s.Starred = starred;
-                    if (starred && !_starredSongs.Contains(s))
-                        _starredSongs.Add(s);
-                    else if (!starred)
-                        _starredSongs.Remove(s);
-                    s.CachedTags = null;
-                    s.CachedTags = SubsonicUrlHelper.ToTags(s);
-                    changed = true;
-                }
-            }
-            if (changed)
-                Task.Run(() => SaveToDisk());
-        }
-
-        public void UpdateRating(string songId, int userRating)
-        {
-            if (string.IsNullOrEmpty(songId)) return;
-            int clamped = Math.Max(0, Math.Min(5, userRating));
-            bool changed = false;
-            lock (_lock)
-            {
-                if (_byId.TryGetValue(songId, out var s))
-                {
-                    s.UserRating = clamped;
-                    if (clamped >= 3 && !_topRatedSongs.Contains(s))
-                        _topRatedSongs.Add(s);
-                    else if (clamped < 3)
-                        _topRatedSongs.Remove(s);
-                    s.CachedTags = null;
-                    s.CachedTags = SubsonicUrlHelper.ToTags(s);
-                    changed = true;
-                }
-            }
-            if (changed)
-                Task.Run(() => SaveToDisk());
         }
     }
 }

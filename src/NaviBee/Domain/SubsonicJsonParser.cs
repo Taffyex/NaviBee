@@ -115,7 +115,13 @@ namespace MusicBeePlugin
                 PlayCount = GetInt(dict, "playCount"),
                 Starred = IsStarredValue(dict),
                 UserRating = GetInt(dict, "userRating", GetInt(dict, "rating")),
-                IsDir = GetBool(dict, "isDir")
+                IsDir = GetBool(dict, "isDir"),
+                Created = GetString(dict, "created"),
+                Played = GetString(dict, "played"),
+                Comment = GetString(dict, "comment"),
+                SamplingRate = GetInt(dict, "samplingRate"),
+                ChannelCount = GetInt(dict, "channelCount"),
+                BitDepth = GetInt(dict, "bitDepth")
             };
         }
 
@@ -171,6 +177,20 @@ namespace MusicBeePlugin
                 Scanning = GetBool(dict, "scanning"),
                 Count = GetInt(dict, "count"),
                 LastScan = GetString(dict, "lastScan")
+            };
+        }
+
+        public static SubsonicPingInfo ParsePingInfo(IDictionary<string, object> resp)
+        {
+            if (resp == null) return new SubsonicPingInfo { Ok = false };
+            bool ok = string.Equals(GetString(resp, "status"), "ok", StringComparison.OrdinalIgnoreCase);
+            return new SubsonicPingInfo
+            {
+                Ok = ok,
+                ServerType = GetString(resp, "type"),
+                ServerVersion = GetString(resp, "serverVersion"),
+                ApiVersion = GetString(resp, "version"),
+                OpenSubsonic = GetBool(resp, "openSubsonic")
             };
         }
 
