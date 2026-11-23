@@ -67,12 +67,7 @@ namespace MusicBeePlugin
             _byPath = new Dictionary<string, SubsonicSong>(songs.Count * 2, StringComparer.OrdinalIgnoreCase);
             _byUniqueFileName = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
             _byId = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
-            _byServerSuffix3 = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
-            _byServerSuffix2 = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
-            _byServerStem3 = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
-            _byServerStem2 = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
-            _byMetaExact = new Dictionary<string, SubsonicSong>(songs.Count * 2, StringComparer.OrdinalIgnoreCase);
-            _byMetaLoose = new Dictionary<string, List<SubsonicSong>>(songs.Count, StringComparer.OrdinalIgnoreCase);
+            ResetLocalMatchIndexesLocked(songs.Count);
             _byArtist = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
             _byAlbumKey = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
             _albumsByArtist = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -85,11 +80,14 @@ namespace MusicBeePlugin
             _mostPlayedSongs = new List<SubsonicSong>();
 
             var seenAlbums = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenAlbumsByArtist = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var distinctCovers = new HashSet<string>(StringComparer.Ordinal);
             var tagsList = new List<KeyValuePair<byte, string>[]>(songs.Count);
 
-            foreach (var s in songs)
+            for (int i = 0; i < songs.Count; i++)
             {
+                var s = songs[i];
+                s.CatalogIndex = i;
                 string rel = SubsonicUrlHelper.BuildRelativePath(s);
                 if (_byPath.ContainsKey(rel) && !string.IsNullOrEmpty(s.Id))
                 {
@@ -169,8 +167,9 @@ namespace MusicBeePlugin
                 {
                     albList = new List<string>();
                     _albumsByArtist[artistName] = albList;
+                    seenAlbumsByArtist[artistName] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 }
-                if (!albList.Any(x => string.Equals(x, albumFolder, StringComparison.OrdinalIgnoreCase)))
+                if (seenAlbumsByArtist[artistName].Add(albumFolder))
                     albList.Add(albumFolder);
 
                 string globalAlbKey = $"{albumFolder} — {artistName}";
@@ -250,124 +249,6 @@ namespace MusicBeePlugin
             if (!string.IsNullOrEmpty(info.Id)) return info.Id;
 
             return null;
-        }
-
-        private static void AddUnique(Dictionary<string, SubsonicSong> dict, string key, SubsonicSong song)
-        {
-            if (string.IsNullOrEmpty(key) || song == null) return;
-            if (dict.TryGetValue(key, out var existing))
-            {
-                if (existing != null && !string.Equals(existing.Id, song.Id, StringComparison.OrdinalIgnoreCase))
-                    dict[key] = null; // Ambiguous key across different songs
-            }
-            else
-            {
-                dict[key] = song;
-            }
-        }
-
-        private void IndexLocalMatchKeysLocked(SubsonicSong s, string syntheticRel)
-        {
-            string serverPath = !string.IsNullOrWhiteSpace(s.Path) ? s.Path : syntheticRel;
-            LocalLibraryLinker.ExtractPathSuffixes(serverPath, out var suf3, out var suf2, out var stem3, out var stem2);
-            AddUnique(_byServerSuffix3, suf3, s);
-            AddUnique(_byServerSuffix2, suf2, s);
-            AddUnique(_byServerStem3, stem3, s);
-            AddUnique(_byServerStem2, stem2, s);
-
-            string title = LocalLibraryLinker.NormalizeMetaToken(s.Title);
-            if (string.IsNullOrEmpty(title)) return;
-            string album = LocalLibraryLinker.NormalizeMetaToken(s.Album);
-            string albArtist = LocalLibraryLinker.NormalizeMetaToken(s.AlbumArtist);
-            string artist = LocalLibraryLinker.NormalizeMetaToken(s.Artist);
-            int disc = s.DiscNumber > 0 ? s.DiscNumber : 1;
-
-            void IndexArtistVariant(string a)
-            {
-                if (string.IsNullOrEmpty(a)) return;
-                if (s.Track > 0)
-                    AddUnique(_byMetaExact, $"{a}|{album}|{disc}|{s.Track}|{title}", s);
-
-                string looseKey = $"{a}|{album}|{title}";
-                if (!_byMetaLoose.TryGetValue(looseKey, out var list))
-                {
-                    list = new List<SubsonicSong>(2);
-                    _byMetaLoose[looseKey] = list;
-                }
-                if (!list.Contains(s))
-                    list.Add(s);
-            }
-
-            IndexArtistVariant(albArtist);
-            if (!string.Equals(artist, albArtist, StringComparison.Ordinal))
-                IndexArtistVariant(artist);
-        }
-
-        public SubsonicSong FindSongByServerPathSuffix(string localPath)
-        {
-            LocalLibraryLinker.ExtractPathSuffixes(localPath, out var suf3, out var suf2, out var stem3, out var stem2);
-            if (suf2 == null) return null;
-
-            lock (_lock)
-            {
-                if (suf3 != null && _byServerSuffix3.TryGetValue(suf3, out var s) && s != null) return s;
-                if (_byServerSuffix2.TryGetValue(suf2, out s) && s != null) return s;
-                if (stem3 != null && _byServerStem3.TryGetValue(stem3, out s) && s != null) return s;
-                if (stem2 != null && _byServerStem2.TryGetValue(stem2, out s) && s != null) return s;
-                return null;
-            }
-        }
-
-        public SubsonicSong FindSongByMetadata(string artist, string albumArtist, string album, int discNo, int trackNo, string title, int durationSeconds = 0)
-        {
-            string normTitle = LocalLibraryLinker.NormalizeMetaToken(title);
-            if (string.IsNullOrEmpty(normTitle)) return null;
-
-            string normAlbum = LocalLibraryLinker.NormalizeMetaToken(album);
-            string normAlbArtist = LocalLibraryLinker.NormalizeMetaToken(albumArtist);
-            string normArtist = LocalLibraryLinker.NormalizeMetaToken(artist);
-            int disc = discNo > 0 ? discNo : 1;
-
-            lock (_lock)
-            {
-                if (trackNo > 0)
-                {
-                    if (!string.IsNullOrEmpty(normAlbArtist) &&
-                        _byMetaExact.TryGetValue($"{normAlbArtist}|{normAlbum}|{disc}|{trackNo}|{normTitle}", out var s1) && s1 != null)
-                        return s1;
-                    if (!string.IsNullOrEmpty(normArtist) &&
-                        _byMetaExact.TryGetValue($"{normArtist}|{normAlbum}|{disc}|{trackNo}|{normTitle}", out var s2) && s2 != null)
-                        return s2;
-                }
-
-                SubsonicSong MatchLoose(string a)
-                {
-                    if (string.IsNullOrEmpty(a)) return null;
-                    if (!_byMetaLoose.TryGetValue($"{a}|{normAlbum}|{normTitle}", out var list) || list == null || list.Count == 0)
-                        return null;
-
-                    if (durationSeconds > 0)
-                    {
-                        SubsonicSong best = null;
-                        int matches = 0;
-                        foreach (var c in list)
-                        {
-                            if (c.Duration <= 0 || Math.Abs(c.Duration - durationSeconds) <= 3)
-                            {
-                                best = c;
-                                matches++;
-                            }
-                        }
-                        if (matches == 1) return best;
-                    }
-
-                    if (list.Count == 1 && (trackNo <= 0 || list[0].Track <= 0 || list[0].Track == trackNo))
-                        return list[0];
-                    return null;
-                }
-
-                return MatchLoose(normAlbArtist) ?? MatchLoose(normArtist);
-            }
         }
     }
 }

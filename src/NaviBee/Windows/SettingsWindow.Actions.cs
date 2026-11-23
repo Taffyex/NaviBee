@@ -178,17 +178,12 @@ namespace MusicBeePlugin
                 return;
             }
 
-            _settings.LinkLocalLibraryTracks = _chkLinkLocal.Checked;
-            _settings.EmbedNavidromeIdInLocalTag = _chkEmbedLocalPid.Checked;
-            _settings.SyncServerStarsToLibrary = _chkSyncStars.Checked;
-            _settings.SyncPlayCountsToLibrary = _chkSyncStars.Checked;
-
             _btnLinkLocal.Enabled = false;
             _lblStatus.ForeColor = Color.Black;
             _lblStatus.Text = "Linking local library tracks to Navidrome...";
 
             Plugin.Instance.LinkAndSyncLocalLibrary(
-                showDialog: false,
+                showDialog: true,
                 pushLocalRatingsOnLink: true,
                 statusCallback: msg => SafeUi(() =>
                 {
@@ -199,7 +194,9 @@ namespace MusicBeePlugin
                 {
                     _btnLinkLocal.Enabled = true;
                     RefreshStats();
-                }));
+                }),
+                requireConfirmation: false,
+                overrideEmbedPid: _chkEmbedLocalPid.Checked);
         }
 
         private void UpgradeArtwork()

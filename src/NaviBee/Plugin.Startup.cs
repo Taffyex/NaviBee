@@ -11,6 +11,7 @@ namespace MusicBeePlugin
         private static readonly object _lifecycleLock = new object();
         private static CancellationTokenSource _shutdownCts = new CancellationTokenSource();
         private static volatile bool _storageReadySent;
+        private static int _isImportActive;
 
         internal static CancellationToken ShutdownToken
         {
@@ -41,6 +42,7 @@ namespace MusicBeePlugin
             }
             DisposePlaylistDebounceTimers();
             ArtworkCache.Instance.StopPrewarm();
+            AudioStreamCache.Instance.StopBackgroundDownloads();
         }
 
         private void OnPluginStartup()
@@ -104,7 +106,23 @@ namespace MusicBeePlugin
                 WarmPlaylistLookup();
                 if (ct.IsCancellationRequested) return;
 
-                bool forceFull = !NavidromeCatalog.Instance.HasData || NavidromeCatalog.Instance.IsServerChanged(Subsonic);
+                bool serverChanged = NavidromeCatalog.Instance.IsServerChanged(Subsonic);
+                if (serverChanged)
+                {
+                    ResetSyncTracking();
+                    PendingSyncQueue.Instance.Clear();
+                    LocalLibraryLinker.Instance.Clear(persist: true);
+                    PlaylistLinkStore.Instance.Clear();
+                    ArtworkCache.Instance.ClearDiskCache();
+                    AudioStreamCache.Instance.ClearCache();
+                    LyricsCache.Instance.ClearCache();
+                }
+                else
+                {
+                    PendingSyncQueue.Instance.FlushPending(Subsonic, ct);
+                }
+
+                bool forceFull = !NavidromeCatalog.Instance.HasData || serverChanged;
                 bool catalogChanged = false;
                 bool synced = forceFull
                     ? (catalogChanged = NavidromeCatalog.Instance.SyncFromServer(
@@ -112,13 +130,15 @@ namespace MusicBeePlugin
                         msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg),
                         null,
                         Settings.ArtworkSize,
-                        ct))
+                        ct,
+                        startPrewarm: false))
                     : NavidromeCatalog.Instance.SmartSyncIfNeeded(
                         Subsonic,
                         Settings.ArtworkSize,
                         msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg),
                         out catalogChanged,
-                        ct);
+                        ct,
+                        startPrewarm: !isInitialConfigure);
 
                 if (ct.IsCancellationRequested) return;
 
@@ -194,86 +214,106 @@ namespace MusicBeePlugin
             return toImport;
         }
 
-        private void ImportAllToLibrary()
+        private void ImportAllToLibrary(bool requireConfirmation = false)
         {
             if (Api.Library_AddFileToLibrary == null) return;
+
+            if (requireConfirmation)
+            {
+                bool skipDupesPrompt = Settings == null || Settings.SkipDuplicatesOnImport;
+                string dupeNote = skipDupesPrompt
+                    ? "Tracks already linked to local files or already imported will be skipped."
+                    : "Duplicate skipping is currently disabled in settings.";
+                if (!AskUiConfirmation(
+                    $"Import missing Navidrome tracks into your MusicBee Music Library?\n\n{dupeNote}",
+                    "Import Missing Navidrome Tracks"))
+                {
+                    return;
+                }
+            }
+
+            if (Interlocked.CompareExchange(ref _isImportActive, 1, 0) != 0)
+            {
+                ShowUiMessage("Importing Navidrome tracks is already in progress.", "Navidrome Import", MessageBoxIcon.Information);
+                return;
+            }
 
             var ct = ShutdownToken;
             Task.Run(() =>
             {
-                var songs = NavidromeCatalog.Instance.GetAllSongs();
-                if (songs.Count == 0)
+                try
                 {
-                    ShowUiMessage("Please ensure the Navidrome catalog is synced before importing.",
-                        "Navidrome Import", MessageBoxIcon.Information);
-                    return;
-                }
-
-                bool skipDupes = Settings == null || Settings.SkipDuplicatesOnImport;
-                if (skipDupes && (Settings == null || Settings.LinkLocalLibraryTracks))
-                {
-                    Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Matching existing local library tracks to prevent duplicates...");
-                    LinkLocalLibraryInternal(allowEmbedPid: Settings?.EmbedNavidromeIdInLocalTag ?? true, ct);
-                    if (ct.IsCancellationRequested) return;
-                }
-
-                var existingVirtual = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (skipDupes && Api.Library_QueryFilesEx != null &&
-                    Api.Library_QueryFilesEx("Navidrome:", out var navFiles) && navFiles != null)
-                {
-                    foreach (var f in navFiles)
-                        if (!string.IsNullOrEmpty(f)) existingVirtual.Add(f);
-                }
-
-                var missingSongs = FilterMissingImportSongs(
-                    songs,
-                    LocalLibraryLinker.Instance,
-                    existingVirtual,
-                    skipDupes,
-                    out int skippedLocal,
-                    out int skippedExisting);
-
-                int total = missingSongs.Count;
-                int added = 0;
-                int targetSize = Settings?.ArtworkSize ?? 800;
-
-                for (int i = 0; i < total; i++)
-                {
-                    if (ct.IsCancellationRequested) return;
-                    var s = missingSongs[i];
-                    string rel = !string.IsNullOrEmpty(s.CachedRelativePath) ? s.CachedRelativePath : SubsonicUrlHelper.BuildRelativePath(s);
-                    string url = "Navidrome:\\" + rel;
-                    Api.Library_AddFileToLibrary(url, LibraryCategory.Music);
-                    added++;
-
-                    if (MusicBeeArtworkBridge.IsAvailable)
+                    var songs = NavidromeCatalog.Instance.GetAllSongs();
+                    if (songs.Count == 0)
                     {
-                        string cId = !string.IsNullOrEmpty(s.CanonicalCoverId) ? s.CanonicalCoverId : s.CoverArt;
-                        if (!string.IsNullOrEmpty(cId))
-                        {
-                            string localPath = ArtworkCache.Instance.GetLocalFilePathIfExists(cId, targetSize);
-                            if (localPath != null)
-                                MusicBeeArtworkBridge.AttachArtwork(url, localPath);
-                        }
+                        ShowUiMessage("Please ensure the Navidrome catalog is synced before importing.",
+                            "Navidrome Import", MessageBoxIcon.Information);
+                        return;
                     }
 
-                    if (added % 200 == 0 || added == total)
-                        Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Importing missing tracks ({added} / {total})...");
+                    bool skipDupes = Settings == null || Settings.SkipDuplicatesOnImport;
+                    if (skipDupes && (Settings == null || Settings.LinkLocalLibraryTracks))
+                    {
+                        Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Matching existing local library tracks to prevent duplicates...");
+                        LinkLocalLibraryInternal(allowEmbedPid: Settings?.EmbedNavidromeIdInLocalTag ?? true, ct);
+                        if (ct.IsCancellationRequested) return;
+                    }
+
+                    var existingVirtual = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (skipDupes)
+                    {
+                        foreach (var f in QueryLibraryVirtualNavidromeFiles())
+                            existingVirtual.Add(f);
+                    }
+
+                    var missingSongs = FilterMissingImportSongs(
+                        songs,
+                        LocalLibraryLinker.Instance,
+                        existingVirtual,
+                        skipDupes,
+                        out int skippedLocal,
+                        out int skippedExisting);
+
+                    int total = missingSongs.Count;
+                    int added = 0;
+                    int failed = 0;
+
+                    for (int i = 0; i < total; i++)
+                    {
+                        if (ct.IsCancellationRequested) return;
+                        var s = missingSongs[i];
+                        string rel = !string.IsNullOrEmpty(s.CachedRelativePath) ? s.CachedRelativePath : SubsonicUrlHelper.BuildRelativePath(s);
+                        string url = "Navidrome:\\" + rel;
+                        string addedUrl = Api.Library_AddFileToLibrary(url, LibraryCategory.Music);
+                        if (!string.IsNullOrEmpty(addedUrl))
+                            added++;
+                        else
+                            failed++;
+
+                        int processed = i + 1;
+                        if (processed % 200 == 0 || processed == total)
+                            Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Importing missing tracks ({processed:N0} / {total:N0})...");
+                    }
+
+                    if (ct.IsCancellationRequested) return;
+
+                    if (Settings == null || Settings.SyncServerStarsToLibrary || Settings.SyncPlayCountsToLibrary)
+                        SyncStateToMusicBeeLibraryCore(pushLocalRatingsToServer: false, ct);
+
+                    Api.MB_RefreshPanels?.Invoke();
+                    if (added > 0)
+                        ForceCacheAndLinkAllArtwork(false);
+
+                    string failedNote = failed > 0 ? $", {failed:N0} failed" : "";
+                    string summary = added > 0
+                        ? $"Navidrome: Imported {added:N0} missing tracks (skipped {skippedLocal:N0} linked local, {skippedExisting:N0} already imported{failedNote})."
+                        : $"Navidrome: No missing tracks to import ({skippedLocal:N0} already linked to local library, {skippedExisting:N0} already imported{failedNote}).";
+                    Api.MB_SetBackgroundTaskMessage?.Invoke(summary);
                 }
-
-                if (ct.IsCancellationRequested) return;
-
-                if (Settings == null || Settings.SyncServerStarsToLibrary || Settings.SyncPlayCountsToLibrary)
-                    SyncStateToMusicBeeLibraryCore(pushLocalRatingsToServer: false, ct);
-
-                Api.MB_RefreshPanels?.Invoke();
-                if (added > 0)
-                    ForceCacheAndLinkAllArtwork(false);
-
-                string summary = added > 0
-                    ? $"Navidrome: Imported {added:N0} missing tracks (skipped {skippedLocal:N0} linked local, {skippedExisting:N0} already imported)."
-                    : $"Navidrome: No missing tracks to import ({skippedLocal:N0} already linked to local library, {skippedExisting:N0} already imported).";
-                Api.MB_SetBackgroundTaskMessage?.Invoke(summary);
+                finally
+                {
+                    Interlocked.Exchange(ref _isImportActive, 0);
+                }
             }, ct);
         }
     }

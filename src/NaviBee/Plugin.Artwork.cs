@@ -10,8 +10,15 @@ namespace MusicBeePlugin
     {
         private static int _isLinkingActive = 0;
 
-        public void ForceCacheAndLinkAllArtwork(bool showDialog = true)
+        public void ForceCacheAndLinkAllArtwork(bool showDialog = true, bool requireConfirmation = false)
         {
+            if (requireConfirmation && !AskUiConfirmation(
+                "Download any missing Navidrome album covers to disk and link artwork across all Navidrome tracks?",
+                "Force Cache & Link All Artwork"))
+            {
+                return;
+            }
+
             if (Interlocked.CompareExchange(ref _isLinkingActive, 1, 0) != 0)
             {
                 if (showDialog)
@@ -19,6 +26,7 @@ namespace MusicBeePlugin
                 return;
             }
 
+            ArtworkCache.Instance.StopPrewarm();
             var ct = ShutdownToken;
             Task.Run(() =>
             {
@@ -87,19 +95,16 @@ namespace MusicBeePlugin
                             }
                         }
 
-                        if (Api.Library_QueryFilesEx != null && Api.Library_QueryFilesEx("Navidrome:", out var libFiles) && libFiles != null)
+                        foreach (var f in QueryLibraryVirtualNavidromeFiles())
                         {
-                            foreach (var f in libFiles)
+                            if (!string.IsNullOrEmpty(f) && seenUrls.Add(f))
                             {
-                                if (!string.IsNullOrEmpty(f) && seenUrls.Add(f))
+                                string cId = NavidromeCatalog.Instance.ResolveCoverArtId(f);
+                                if (!string.IsNullOrEmpty(cId))
                                 {
-                                    string cId = NavidromeCatalog.Instance.ResolveCoverArtId(f);
-                                    if (!string.IsNullOrEmpty(cId))
-                                    {
-                                        string localPath = ArtworkCache.Instance.GetLocalFilePathIfExists(cId, targetSize);
-                                        if (localPath != null)
-                                            linkList.Add(new KeyValuePair<string, string>(f, localPath));
-                                    }
+                                    string localPath = ArtworkCache.Instance.GetLocalFilePathIfExists(cId, targetSize);
+                                    if (localPath != null)
+                                        linkList.Add(new KeyValuePair<string, string>(f, localPath));
                                 }
                             }
                         }

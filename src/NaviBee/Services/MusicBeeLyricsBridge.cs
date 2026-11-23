@@ -277,7 +277,7 @@ namespace MusicBeePlugin
             return updatedAny;
         }
 
-        public static bool AttachLyrics(string trackUrl, string lyricsText, bool isSynced, bool refreshActivePanel = false)
+        public static bool AttachLyrics(string trackUrl, string lyricsText, bool isSynced, bool refreshActivePanel = false, bool synchronous = true)
         {
             if (string.IsNullOrEmpty(trackUrl) || string.IsNullOrWhiteSpace(lyricsText))
                 return false;
@@ -285,7 +285,7 @@ namespace MusicBeePlugin
                 return false;
 
             bool attached = false;
-            MusicBeeArtworkBridge.RunOnUiThread(() =>
+            Action apply = () =>
             {
                 try
                 {
@@ -305,8 +305,14 @@ namespace MusicBeePlugin
                         attached = true;
                 }
                 catch { }
-            });
-            return attached;
+            };
+
+            if (synchronous)
+                MusicBeeArtworkBridge.RunOnUiThread(apply);
+            else
+                MusicBeeArtworkBridge.BeginRunOnUiThread(apply);
+
+            return synchronous && attached;
         }
     }
 }

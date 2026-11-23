@@ -82,8 +82,6 @@ namespace MusicBeePlugin
 
             string safeName = SubsonicUrlHelper.Sanitize(!string.IsNullOrWhiteSpace(meta.Name) ? meta.Name : meta.Id);
             string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
-            string targetPath = Path.Combine(_backupDir, $"{safeName}_{stamp}.json");
-            string tmpPath = targetPath + ".tmp_" + Guid.NewGuid().ToString("N");
 
             var snapshot = new PlaylistBackupSnapshot
             {
@@ -110,29 +108,25 @@ namespace MusicBeePlugin
                     if (!Directory.Exists(_backupDir))
                         Directory.CreateDirectory(_backupDir);
 
-                    string json = _serializer.Serialize(snapshot);
-                    File.WriteAllText(tmpPath, json, Encoding.UTF8);
-
-                    var fi = new FileInfo(tmpPath);
-                    if (!fi.Exists || fi.Length == 0)
+                    string targetPath = Path.Combine(_backupDir, $"{safeName}_{stamp}.json");
+                    int suffix = 1;
+                    while (File.Exists(targetPath))
                     {
-                        try { File.Delete(tmpPath); } catch { }
-                        return false;
+                        targetPath = Path.Combine(_backupDir, $"{safeName}_{stamp}_{suffix}.json");
+                        suffix++;
                     }
 
-                    if (File.Exists(targetPath)) File.Delete(targetPath);
-                    File.Move(tmpPath, targetPath);
-                    tmpPath = null;
+                    string json = _serializer.Serialize(snapshot);
+                    NavidromeCatalog.WriteTextAtomic(targetPath, json);
+
+                    if (!File.Exists(targetPath) || new FileInfo(targetPath).Length == 0)
+                        return false;
 
                     PruneOldBackupsLocked(safeName);
-                    return File.Exists(targetPath) && new FileInfo(targetPath).Length > 0;
+                    return true;
                 }
                 catch
                 {
-                    if (!string.IsNullOrEmpty(tmpPath))
-                    {
-                        try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
-                    }
                     return false;
                 }
             }

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -13,6 +14,8 @@ namespace MusicBeePlugin
         internal static SubsonicClient Subsonic;
         private static string SettingsFilePath;
         private static string PersistentCacheRoot;
+        private static int _isResyncActive;
+        private static int _isArtworkUpgradeActive;
 
         public PluginInfo Initialise(IntPtr apiInterfacePtr)
         {
@@ -31,6 +34,7 @@ namespace MusicBeePlugin
 
             NavidromeCatalog.Instance.ConfigureStorage(persistentPath);
             LocalLibraryLinker.Instance.ConfigureStorage(persistentPath);
+            PendingSyncQueue.Instance.ConfigureStorage(persistentPath);
             ArtworkCache.Instance.ConfigureStorage(persistentPath);
             AudioStreamCache.Instance.ConfigureStorage(persistentPath);
             LyricsCache.Instance.ConfigureStorage(persistentPath);
@@ -50,23 +54,26 @@ namespace MusicBeePlugin
 
             if (Api.MB_RegisterCommand != null)
             {
-                Api.MB_RegisterCommand("Navidrome: Link Local Library Tracks & Sync State", (s, e) => LinkAndSyncLocalLibrary(showDialog: true, pushLocalRatingsOnLink: true));
-                Api.MB_RegisterCommand("Navidrome: Resync Catalog & Artwork", (s, e) => ForceResync());
-                Api.MB_RegisterCommand("Navidrome: Force Cache & Link All Artwork", (s, e) => ForceCacheAndLinkAllArtwork(true));
-                Api.MB_RegisterCommand("Navidrome: Upgrade Cached Artwork to High-Res", (s, e) => UpgradeArtwork());
+                Api.MB_RegisterCommand("Navidrome: Link Local Library Tracks & Sync State", (s, e) => LinkAndSyncLocalLibrary(showDialog: true, pushLocalRatingsOnLink: true, requireConfirmation: true));
+                Api.MB_RegisterCommand("Navidrome: Resync Catalog & Artwork", (s, e) => ForceResync(requireConfirmation: true));
+                Api.MB_RegisterCommand("Navidrome: Force Cache & Link All Artwork", (s, e) => ForceCacheAndLinkAllArtwork(showDialog: true, requireConfirmation: true));
+                Api.MB_RegisterCommand("Navidrome: Upgrade Cached Artwork to High-Res", (s, e) => UpgradeArtwork(requireConfirmation: true));
                 Api.MB_RegisterCommand("Navidrome: Clear Audio & Artwork Cache", (s, e) => ClearAllCache());
-                Api.MB_RegisterCommand("Navidrome: Import All Tracks into Music Library", (s, e) => ImportAllToLibrary());
+                Api.MB_RegisterCommand("Navidrome: Import All Tracks into Music Library", (s, e) => ImportAllToLibrary(requireConfirmation: true));
             }
 
             if (Api.MB_AddMenuItem != null)
             {
-                Api.MB_AddMenuItem("mnuTools/Navidrome: Link Local Library Tracks & Sync State", "Navidrome: Link Local Library", (s, e) => LinkAndSyncLocalLibrary(showDialog: true, pushLocalRatingsOnLink: true));
-                Api.MB_AddMenuItem("mnuTools/Navidrome: Resync Catalog & Artwork", "Navidrome: Resync Catalog", (s, e) => ForceResync());
-                Api.MB_AddMenuItem("mnuTools/Navidrome: Import Missing Tracks into Music Library", "Navidrome: Import Missing Tracks", (s, e) => ImportAllToLibrary());
-                Api.MB_AddMenuItem("mnuTools/Navidrome: Force Cache & Link All Artwork", "Navidrome: Cache & Link Artwork", (s, e) => ForceCacheAndLinkAllArtwork(true));
-                Api.MB_AddMenuItem("mnuTools/Navidrome: Upgrade Cached Artwork to High-Res", "Navidrome: Upgrade Artwork", (s, e) => UpgradeArtwork());
-                Api.MB_AddMenuItem("mnuTools/Navidrome: Clear Audio & Artwork Cache", "Navidrome: Clear Cache", (s, e) => ClearAllCache());
+                Api.MB_AddMenuItem("mnuTools/NaviBee", "", null);
+                Api.MB_AddMenuItem("mnuTools/NaviBee/Link Local Library Tracks && Sync State", "", (s, e) => LinkAndSyncLocalLibrary(showDialog: true, pushLocalRatingsOnLink: true, requireConfirmation: true));
+                Api.MB_AddMenuItem("mnuTools/NaviBee/Resync Catalog && Artwork", "", (s, e) => ForceResync(requireConfirmation: true));
+                Api.MB_AddMenuItem("mnuTools/NaviBee/Import Missing Tracks into Music Library", "", (s, e) => ImportAllToLibrary(requireConfirmation: true));
+                Api.MB_AddMenuItem("mnuTools/NaviBee/-", "", null);
+                Api.MB_AddMenuItem("mnuTools/NaviBee/Force Cache && Link All Artwork", "", (s, e) => ForceCacheAndLinkAllArtwork(showDialog: true, requireConfirmation: true));
+                Api.MB_AddMenuItem("mnuTools/NaviBee/Upgrade Cached Artwork to High-Res", "", (s, e) => UpgradeArtwork(requireConfirmation: true));
+                Api.MB_AddMenuItem("mnuTools/NaviBee/Clear Audio && Artwork Cache", "", (s, e) => ClearAllCache());
             }
+
 
             NavidromeCatalog.Instance.LoadFromDisk();
 
@@ -79,7 +86,7 @@ namespace MusicBeePlugin
                 Author = "TaffyEx",
                 TargetApplication = "Navidrome",
                 VersionMajor = 1,
-                VersionMinor = 1,
+                VersionMinor = 2,
                 Revision = 0,
                 MinInterfaceVersion = MusicBeeApiInfo.MinInterfaceVersion,
                 MinApiRevision = MusicBeeApiInfo.MinApiRevision,
@@ -116,6 +123,7 @@ namespace MusicBeePlugin
         {
             CancelBackgroundWork();
             NavidromeCatalog.Instance.FlushPendingSave();
+            LocalLibraryLinker.Instance.FlushPendingSave();
             _storageIcon?.Dispose();
             _storageIcon = null;
             Instance = null;
@@ -180,56 +188,104 @@ namespace MusicBeePlugin
             }
         }
 
-        private void ForceResync()
+        private void ForceResync(bool requireConfirmation = false)
         {
+            if (requireConfirmation && !AskUiConfirmation(
+                "Perform a full catalog resync from Navidrome and refresh artwork links?\n\nThis will re-fetch all tracks from your server and update local links and state.",
+                "Resync Navidrome Catalog & Artwork"))
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _isResyncActive, 1, 0) != 0)
+            {
+                ShowUiMessage("A Navidrome catalog resync is already in progress.", "Navidrome Resync", MessageBoxIcon.Information);
+                return;
+            }
+
             var ct = ShutdownToken;
             Task.Run(() =>
             {
-                Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Starting full catalog and artwork sync...");
-                bool ok = NavidromeCatalog.Instance.SyncFromServer(Subsonic, msg =>
+                try
                 {
-                    Api.MB_SetBackgroundTaskMessage?.Invoke(msg);
-                }, null, Settings?.ArtworkSize ?? 800, ct);
+                    Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Starting full catalog and artwork sync...");
+                    PendingSyncQueue.Instance.FlushPending(Subsonic, ct);
+                    bool ok = NavidromeCatalog.Instance.SyncFromServer(Subsonic, msg =>
+                    {
+                        Api.MB_SetBackgroundTaskMessage?.Invoke(msg);
+                    }, null, Settings?.ArtworkSize ?? 800, ct, startPrewarm: false);
 
-                if (ct.IsCancellationRequested) return;
+                    if (ct.IsCancellationRequested) return;
 
-                if (ok)
-                {
-                    SetConnectionReady(true);
-                    WarmPlaylistLookup();
-                    if (Settings != null && Settings.LinkLocalLibraryTracks)
-                        LinkLocalLibraryInternal(allowEmbedPid: Settings.EmbedNavidromeIdInLocalTag, ct);
-                    if (Settings != null && (Settings.SyncServerStarsToLibrary || Settings.SyncPlayCountsToLibrary))
-                        SyncStateToMusicBeeLibraryCore(pushLocalRatingsToServer: false, ct);
-                    Refresh();
-                    ForceCacheAndLinkAllArtwork(false);
-                    Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Resynced {NavidromeCatalog.Instance.SongCount:N0} tracks.");
+                    if (ok)
+                    {
+                        SetConnectionReady(true);
+                        WarmPlaylistLookup();
+                        if (Settings != null && Settings.LinkLocalLibraryTracks)
+                            LinkLocalLibraryInternal(allowEmbedPid: Settings.EmbedNavidromeIdInLocalTag, ct);
+                        if (Settings != null && (Settings.SyncServerStarsToLibrary || Settings.SyncPlayCountsToLibrary))
+                            SyncStateToMusicBeeLibraryCore(pushLocalRatingsToServer: false, ct);
+                        Refresh();
+                        ForceCacheAndLinkAllArtwork(false);
+                        Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Resynced {NavidromeCatalog.Instance.SongCount:N0} tracks.");
+                    }
+                    else
+                    {
+                        string reason = FriendlyErrors.FormatException(Subsonic?.LastError);
+                        ShowUiMessage($"Could not resync catalog: {reason}", "Navidrome Resync", MessageBoxIcon.Warning);
+                    }
                 }
-                else
+                finally
                 {
-                    string reason = FriendlyErrors.FormatException(Subsonic?.LastError);
-                    ShowUiMessage($"Could not resync catalog: {reason}", "Navidrome Resync", MessageBoxIcon.Warning);
+                    Interlocked.Exchange(ref _isResyncActive, 0);
                 }
             }, ct);
         }
 
-        private void UpgradeArtwork()
+        private void UpgradeArtwork(bool requireConfirmation = false)
         {
+            if (requireConfirmation && !AskUiConfirmation(
+                "Re-download all cached album covers from Navidrome at the configured Artwork Quality setting?",
+                "Upgrade Cached Artwork"))
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _isArtworkUpgradeActive, 1, 0) != 0)
+            {
+                ShowUiMessage("An artwork upgrade is already in progress.", "Artwork Upgrade", MessageBoxIcon.Information);
+                return;
+            }
+
             var ct = ShutdownToken;
             Task.Run(() =>
             {
-                var distinct = NavidromeCatalog.Instance.GetDistinctAlbumCoverIds();
-                if (distinct.Count == 0)
+                try
                 {
-                    ShowUiMessage("Please ensure the Navidrome catalog is loaded before upgrading artwork.",
-                        "Artwork Upgrade", MessageBoxIcon.Information);
-                    return;
-                }
+                    var distinct = NavidromeCatalog.Instance.GetDistinctAlbumCoverIds();
+                    if (distinct.Count == 0)
+                    {
+                        ShowUiMessage("Please ensure the Navidrome catalog is loaded before upgrading artwork.",
+                            "Artwork Upgrade", MessageBoxIcon.Information);
+                        Interlocked.Exchange(ref _isArtworkUpgradeActive, 0);
+                        return;
+                    }
 
-                ArtworkCache.Instance.UpgradeAndRecacheArtwork(distinct, Subsonic, Settings.ArtworkSize, msg =>
+                    int targetSize = Settings?.ArtworkSize ?? 800;
+                    ArtworkCache.Instance.UpgradeAndRecacheArtwork(distinct, Subsonic, targetSize, msg =>
+                    {
+                        Api.MB_SetBackgroundTaskMessage?.Invoke(msg);
+                    }, () =>
+                    {
+                        Interlocked.Exchange(ref _isArtworkUpgradeActive, 0);
+                        if (!ct.IsCancellationRequested)
+                            ForceCacheAndLinkAllArtwork(false);
+                    }, ct);
+                }
+                catch
                 {
-                    Api.MB_SetBackgroundTaskMessage?.Invoke(msg);
-                }, () => ForceCacheAndLinkAllArtwork(false));
+                    Interlocked.Exchange(ref _isArtworkUpgradeActive, 0);
+                }
             }, ct);
         }
 

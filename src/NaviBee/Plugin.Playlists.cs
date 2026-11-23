@@ -111,23 +111,31 @@ namespace MusicBeePlugin
         private void ScheduleDebouncedPlaylistPush(string localPath, string plName)
         {
             CancellationToken ct = ShutdownToken;
-            var timer = new System.Threading.Timer(_ =>
+            System.Threading.Timer selfTimer = null;
+            selfTimer = new System.Threading.Timer(_ =>
             {
-                if (_playlistDebounceTimers.TryRemove(localPath, out var self))
+                try
                 {
-                    try { self.Dispose(); } catch { }
+                    ((ICollection<KeyValuePair<string, System.Threading.Timer>>)_playlistDebounceTimers)
+                        .Remove(new KeyValuePair<string, System.Threading.Timer>(localPath, selfTimer));
                 }
+                finally
+                {
+                    try { selfTimer?.Dispose(); } catch { }
+                }
+
                 if (ct.IsCancellationRequested || Settings == null || !Settings.PushPlaylistsToServer)
                     return;
 
                 Task.Run(() => PushLocalPlaylistSafe(localPath, plName, ct), ct);
-            }, null, 1500, Timeout.Infinite);
+            }, null, Timeout.Infinite, Timeout.Infinite);
 
-            _playlistDebounceTimers.AddOrUpdate(localPath, timer, (_, old) =>
+            _playlistDebounceTimers.AddOrUpdate(localPath, selfTimer, (_, old) =>
             {
                 try { old.Dispose(); } catch { }
-                return timer;
+                return selfTimer;
             });
+            try { selfTimer.Change(1500, Timeout.Infinite); } catch { }
         }
 
         private void PushLocalPlaylistSafe(string localPath, string plName, CancellationToken ct)

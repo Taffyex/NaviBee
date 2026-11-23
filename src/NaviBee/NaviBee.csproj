@@ -12,7 +12,7 @@
     <RootNamespace>MusicBeePlugin</RootNamespace>
     <Authors>TaffyEx</Authors>
     <Product>NaviBee</Product>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <OutputPath>bin\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -37,14 +37,20 @@
     <Compile Include="Services\AudioStreamCache.cs" />
     <Compile Include="Services\LyricsCache.cs" />
     <Compile Include="Services\NavidromeCatalog.cs" />
+    <Compile Include="Services\NavidromeCatalog.Storage.cs" />
+    <Compile Include="Services\NavidromeCatalog.Sync.cs" />
     <Compile Include="Services\NavidromeCatalog.Index.cs" />
+    <Compile Include="Services\NavidromeCatalog.LocalMatch.cs" />
     <Compile Include="Services\NavidromeCatalog.Starred.cs" />
+    <Compile Include="Services\PendingSyncQueue.cs" />
     <Compile Include="Services\LocalLibraryLinker.cs" />
+    <Compile Include="Services\LocalLibraryLinker.Normalize.cs" />
     <Compile Include="Services\PlaylistLinkStore.cs" />
     <Compile Include="Services\PlaylistBackup.cs" />
     <Compile Include="Services\MusicBeeArtworkBridge.cs" />
     <Compile Include="Services\MusicBeeArtworkBridge.Discovery.cs" />
     <Compile Include="Services\MusicBeeLyricsBridge.cs" />
+    <Compile Include="Services\StorageIconRenderer.cs" />
     <Compile Include="Windows\SettingsWindow.cs" />
     <Compile Include="Windows\SettingsWindow.Actions.cs" />
     <Compile Include="Plugin.Lifecycle.cs" />
@@ -53,6 +59,7 @@
     <Compile Include="Plugin.Storage.Stream.cs" />
     <Compile Include="Plugin.Sync.cs" />
     <Compile Include="Plugin.LocalSync.cs" />
+    <Compile Include="Plugin.StateSync.cs" />
     <Compile Include="Plugin.Playlists.cs" />
     <Compile Include="Plugin.Artwork.cs" />
     <Compile Include="MusicBeeInterface.cs" />

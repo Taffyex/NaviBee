@@ -111,19 +111,32 @@ namespace MusicBeePlugin
             object l = _fileLocks.GetOrAdd(filePath, _ => new object());
             lock (l)
             {
+                string tmp = filePath + ".tmp_" + Guid.NewGuid().ToString("N");
                 try
                 {
                     string dir = Path.GetDirectoryName(filePath);
                     if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                    string tmp = filePath + ".tmp_" + Guid.NewGuid().ToString("N");
                     File.WriteAllBytes(tmp, data);
                     if (File.Exists(filePath))
                     {
+                        try
+                        {
+                            File.Replace(tmp, filePath, null, ignoreMetadataErrors: true);
+                            tmp = null;
+                            return;
+                        }
+                        catch { }
                         try { File.Delete(filePath); } catch { }
                     }
                     File.Move(tmp, filePath);
+                    tmp = null;
                 }
                 catch { }
+                finally
+                {
+                    if (!string.IsNullOrEmpty(tmp))
+                        try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                }
             }
         }
 
@@ -262,9 +275,13 @@ namespace MusicBeePlugin
             }, token);
         }
 
-        public void UpgradeAndRecacheArtwork(IEnumerable<string> canonicalCoverIds, SubsonicClient client, int targetSize, Action<string> progressCallback, Action onCompleted)
+        public void UpgradeAndRecacheArtwork(IEnumerable<string> canonicalCoverIds, SubsonicClient client, int targetSize, Action<string> progressCallback, Action onCompleted, CancellationToken ct = default)
         {
-            if (canonicalCoverIds == null || client == null) return;
+            if (canonicalCoverIds == null || client == null)
+            {
+                onCompleted?.Invoke();
+                return;
+            }
             StopPrewarm();
             ClearMemoryCache();
 
@@ -277,8 +294,9 @@ namespace MusicBeePlugin
                     int done = 0;
                     progressCallback?.Invoke($"Navidrome: Upgrading {total} album covers to high-res...");
 
-                    Parallel.ForEach(distinct, new ParallelOptions { MaxDegreeOfParallelism = 4 }, id =>
+                    Parallel.ForEach(distinct, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, id =>
                     {
+                        if (ct.IsCancellationRequested) return;
                         byte[] data = client.GetCoverArtDirect(id, targetSize);
                         if (SubsonicClient.IsValidImageBytes(data))
                         {
@@ -291,10 +309,12 @@ namespace MusicBeePlugin
                             progressCallback?.Invoke($"Navidrome: Upgraded {c} / {total} album covers...");
                     });
 
-                    progressCallback?.Invoke($"Navidrome: High-res artwork upgrade complete ({done} covers).");
-                    onCompleted?.Invoke();
+                    if (!ct.IsCancellationRequested)
+                        progressCallback?.Invoke($"Navidrome: High-res artwork upgrade complete ({done} covers).");
                 }
+                catch (OperationCanceledException) { }
                 catch (Exception ex) { progressCallback?.Invoke($"Navidrome: Artwork upgrade error: {ex.Message}"); }
+                finally { onCompleted?.Invoke(); }
             });
         }
 

@@ -9,33 +9,7 @@ using System.Web.Script.Serialization;
 
 namespace MusicBeePlugin
 {
-    public class LocalTrackLink
-    {
-        public string LocalPath { get; set; } = "";
-        public string SongId { get; set; } = "";
-        public string MatchTier { get; set; } = "";
-        public string LinkedUtc { get; set; } = "";
-    }
-
-    public struct LocalTrackInfo
-    {
-        public string Url, PidTag, Artist, AlbumArtist, Album, Title;
-        public int DiscNo, TrackNo, DurationSeconds;
-    }
-
-    public class LocalLinkSummary
-    {
-        public int Scanned { get; set; }
-        public int Linked { get; set; }
-        public int NewlyLinked { get; set; }
-        public int PidEmbedded { get; set; }
-        public int Unmatched { get; set; }
-        public int MatchedByPid { get; set; }
-        public int MatchedByPath { get; set; }
-        public int MatchedByMetadata { get; set; }
-    }
-
-    public class LocalLibraryLinker
+    public partial class LocalLibraryLinker
     {
         private static LocalLibraryLinker _instance;
         private static readonly object _instanceLock = new object();
@@ -56,12 +30,17 @@ namespace MusicBeePlugin
         }
 
         private readonly object _lock = new object();
+        private readonly object _saveTimerLock = new object();
+        private Timer _debouncedSaveTimer;
+        private volatile bool _hasPendingSave;
         private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
         private readonly Dictionary<string, LocalTrackLink> _byLocalPath = new Dictionary<string, LocalTrackLink>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<string>> _localPathsBySongId = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        private string _cacheDir;
         private string _filePath;
 
         public int LinkCount { get { lock (_lock) { return _byLocalPath.Count; } } }
+        public string CacheDirectory { get { lock (_lock) { return _cacheDir; } } }
 
         public LocalLibraryLinker()
         {
@@ -76,57 +55,6 @@ namespace MusicBeePlugin
         internal static string NormalizeLocalPath(string path) =>
             string.IsNullOrWhiteSpace(path) ? "" : path.Trim().Replace('/', '\\');
 
-        internal static void ExtractPathSuffixes(string rawPath, out string suf3, out string suf2, out string stem3, out string stem2)
-        {
-            suf3 = suf2 = stem3 = stem2 = null;
-            if (string.IsNullOrWhiteSpace(rawPath)) return;
-
-            string[] parts = rawPath.Trim().Replace('/', '\\').Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2) return;
-
-            string file = parts[parts.Length - 1];
-            string ext = Path.GetExtension(file);
-            string stem = !string.IsNullOrEmpty(ext) ? file.Substring(0, file.Length - ext.Length) : file;
-            string parent = parts[parts.Length - 2];
-
-            suf2 = parent + "\\" + file;
-            stem2 = parent + "\\" + stem;
-
-            if (parts.Length >= 3)
-            {
-                string grand = parts[parts.Length - 3];
-                if (!grand.EndsWith(":", StringComparison.Ordinal))
-                {
-                    suf3 = grand + "\\" + suf2;
-                    stem3 = grand + "\\" + stem2;
-                }
-            }
-        }
-
-        internal static string NormalizeMetaToken(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return "";
-            var sb = new StringBuilder(value.Length);
-            bool lastSpace = false;
-            for (int i = 0; i < value.Length; i++)
-            {
-                char c = value[i];
-                if (c == '\u2018' || c == '\u2019') c = '\'';
-                else if (c == '\u2013' || c == '\u2014') c = '-';
-                if (char.IsWhiteSpace(c))
-                {
-                    if (sb.Length > 0 && !lastSpace) { sb.Append(' '); lastSpace = true; }
-                }
-                else
-                {
-                    sb.Append(char.ToLowerInvariant(c));
-                    lastSpace = false;
-                }
-            }
-            if (sb.Length > 0 && sb[sb.Length - 1] == ' ') sb.Length--;
-            return sb.ToString();
-        }
-
         public void ConfigureStorage(string persistentRoot)
         {
             if (string.IsNullOrWhiteSpace(persistentRoot)) return;
@@ -135,6 +63,7 @@ namespace MusicBeePlugin
 
             lock (_lock)
             {
+                _cacheDir = dir;
                 _filePath = Path.Combine(dir, "local_links.json");
                 LoadLocked();
             }
@@ -198,25 +127,51 @@ namespace MusicBeePlugin
         private void SaveLocked()
         {
             if (string.IsNullOrEmpty(_filePath)) return;
-            string tmp = _filePath + ".tmp_" + Guid.NewGuid().ToString("N");
             try
             {
-                string dir = Path.GetDirectoryName(_filePath);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllText(tmp, _serializer.Serialize(_byLocalPath.Values.ToList()), Encoding.UTF8);
-                if (File.Exists(_filePath)) File.Delete(_filePath);
-                File.Move(tmp, _filePath);
-                tmp = null;
+                string json = _serializer.Serialize(_byLocalPath.Values.ToList());
+                NavidromeCatalog.WriteTextAtomic(_filePath, json);
+                _hasPendingSave = false;
             }
             catch { }
-            finally
-            {
-                if (!string.IsNullOrEmpty(tmp))
-                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-            }
         }
 
         public void SaveToDisk() { lock (_lock) { SaveLocked(); } }
+
+        public void ScheduleSaveToDisk(int delayMs = 3000)
+        {
+            _hasPendingSave = true;
+            lock (_saveTimerLock)
+            {
+                if (_debouncedSaveTimer == null)
+                {
+                    _debouncedSaveTimer = new Timer(_ =>
+                    {
+                        if (!_hasPendingSave) return;
+                        _hasPendingSave = false;
+                        SaveToDisk();
+                    }, null, delayMs, Timeout.Infinite);
+                }
+                else
+                {
+                    _debouncedSaveTimer.Change(delayMs, Timeout.Infinite);
+                }
+            }
+        }
+
+        public void FlushPendingSave()
+        {
+            lock (_saveTimerLock)
+            {
+                _debouncedSaveTimer?.Dispose();
+                _debouncedSaveTimer = null;
+            }
+            if (_hasPendingSave)
+            {
+                _hasPendingSave = false;
+                SaveToDisk();
+            }
+        }
 
         public bool TryGetSongId(string localUrl, out string songId)
         {
@@ -296,7 +251,7 @@ namespace MusicBeePlugin
 
             var byMeta = catalog.FindSongByMetadata(
                 track.Artist, track.AlbumArtist, track.Album,
-                track.DiscNo, track.TrackNo, track.Title, track.DurationSeconds);
+                track.DiscNo, track.TrackNo, track.Title, track.DurationSeconds, track.PrimaryArtist);
             if (byMeta != null) { matchTier = "metadata"; return byMeta; }
             return null;
         }
@@ -309,17 +264,38 @@ namespace MusicBeePlugin
             bool pruneMissingLocalPaths = true,
             CancellationToken ct = default)
         {
+            Func<string, MetaDataType, string, bool> writer = writePidTag != null
+                ? (url, field, id) => { writePidTag(url, field, id); return true; }
+                : (Func<string, MetaDataType, string, bool>)null;
+
+            return LinkLocalTracks(localTracks, catalog, settings, writer, pruneMissingLocalPaths, null, ct);
+        }
+
+        public LocalLinkSummary LinkLocalTracks(
+            IEnumerable<LocalTrackInfo> localTracks,
+            NavidromeCatalog catalog,
+            NavidromeSettings settings,
+            Func<string, MetaDataType, string, bool> writePidTag,
+            bool pruneMissingLocalPaths = true,
+            Action<int, int> progressCallback = null,
+            CancellationToken ct = default)
+        {
             var summary = new LocalLinkSummary();
             if (localTracks == null || catalog == null || !catalog.HasData) return summary;
+
+            var trackList = localTracks as IList<LocalTrackInfo> ?? localTracks.ToList();
+            int totalTracks = trackList.Count;
 
             MetaDataType pidField = MetaDataType.Custom16;
             bool shouldEmbed = settings != null && settings.TryGetPidMetaDataType(out pidField) && writePidTag != null;
             var seenLocalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             bool anyDirty = false;
+            int sinceLastCheckpoint = 0;
 
-            foreach (var track in localTracks)
+            for (int i = 0; i < totalTracks; i++)
             {
                 if (ct.IsCancellationRequested) break;
+                var track = trackList[i];
                 if (string.IsNullOrWhiteSpace(track.Url) || IsVirtualNavidromeUrl(track.Url)) continue;
 
                 summary.Scanned++;
@@ -327,32 +303,72 @@ namespace MusicBeePlugin
                 seenLocalPaths.Add(normPath);
 
                 var song = MatchTrack(track, catalog, out var tier);
-                if (song == null) { summary.Unmatched++; continue; }
-
-                summary.Linked++;
-                if (tier == "pid_tag" || tier == "link_map") summary.MatchedByPid++;
-                else if (tier == "path_suffix") summary.MatchedByPath++;
-                else if (tier == "metadata") summary.MatchedByMetadata++;
-
-                if (UpsertLink(normPath, song.Id, tier, persist: false))
+                if (song == null)
                 {
-                    summary.NewlyLinked++;
-                    anyDirty = true;
+                    summary.Unmatched++;
+                    if (summary.UnmatchedSamples.Count < 50)
+                    {
+                        summary.UnmatchedSamples.Add(new LocalUnmatchedSample
+                        {
+                            LocalPath = track.Url,
+                            Artist = track.Artist ?? "",
+                            AlbumArtist = track.AlbumArtist ?? "",
+                            Album = track.Album ?? "",
+                            Title = track.Title ?? "",
+                            DiscNo = track.DiscNo,
+                            TrackNo = track.TrackNo,
+                            DurationSeconds = track.DurationSeconds,
+                            NearestCandidate = catalog.DescribeNearestCandidate(track)
+                        });
+                    }
+                }
+                else
+                {
+                    summary.Linked++;
+                    if (tier == "pid_tag" || tier == "link_map") summary.MatchedByPid++;
+                    else if (tier == "path_suffix") summary.MatchedByPath++;
+                    else if (tier == "metadata") summary.MatchedByMetadata++;
+
+                    if (UpsertLink(normPath, song.Id, tier, persist: false))
+                    {
+                        summary.NewlyLinked++;
+                        anyDirty = true;
+                        sinceLastCheckpoint++;
+                        if (sinceLastCheckpoint >= 2000)
+                        {
+                            SaveToDisk();
+                            sinceLastCheckpoint = 0;
+                        }
+                    }
+
+                    if (shouldEmbed && !IsCueSubTrackUrl(track.Url) && !string.Equals((track.PidTag ?? "").Trim(), song.Id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            if (writePidTag(track.Url, pidField, song.Id))
+                                summary.PidEmbedded++;
+                            else
+                                summary.PidEmbedFailed++;
+                        }
+                        catch
+                        {
+                            summary.PidEmbedFailed++;
+                        }
+                    }
                 }
 
-                if (shouldEmbed && !string.Equals((track.PidTag ?? "").Trim(), song.Id, StringComparison.OrdinalIgnoreCase))
-                {
-                    try { writePidTag(track.Url, pidField, song.Id); summary.PidEmbedded++; }
-                    catch { }
-                }
+                if (progressCallback != null && (summary.Scanned % 500 == 0 || i == totalTracks - 1))
+                    progressCallback(summary.Scanned, totalTracks);
             }
 
             if (pruneMissingLocalPaths && !ct.IsCancellationRequested)
             {
+                int srvCount = catalog.ServerSongCount;
+                bool catalogComplete = srvCount <= 0 || catalog.SongCount >= (int)Math.Ceiling(srvCount * 0.95);
                 lock (_lock)
                 {
                     var stale = _byLocalPath.Keys
-                        .Where(p => !seenLocalPaths.Contains(p) || catalog.FindSongById(_byLocalPath[p].SongId) == null)
+                        .Where(p => !seenLocalPaths.Contains(p) || (catalogComplete && catalog.FindSongById(_byLocalPath[p].SongId) == null))
                         .ToList();
                     foreach (var p in stale)
                     {
@@ -365,6 +381,8 @@ namespace MusicBeePlugin
             }
 
             if (anyDirty) SaveToDisk();
+            if (summary.Unmatched > 0 && !ct.IsCancellationRequested)
+                summary.UnmatchedLogPath = WriteUnmatchedDiagnosticLog(CacheDirectory, catalog.SongCount, catalog.ServerSongCount, summary) ?? "";
             return summary;
         }
     }

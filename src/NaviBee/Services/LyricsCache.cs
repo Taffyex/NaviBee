@@ -10,7 +10,8 @@ namespace MusicBeePlugin
     /// <summary>Caches fetched OpenSubsonic/Subsonic lyrics in memory and under NavidromeCache\Lyrics.</summary>
     public sealed class LyricsCache
     {
-        private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
+        private const int MaxMemCacheEntries = 2000;
+        private const int MemCacheEvictCount = 250;
 
         public static LyricsCache Instance { get; } = new LyricsCache();
 
@@ -40,8 +41,33 @@ namespace MusicBeePlugin
             {
                 if (!Directory.Exists(_cacheDir))
                     Directory.CreateDirectory(_cacheDir);
+                foreach (var f in Directory.GetFiles(_cacheDir))
+                {
+                    string name = Path.GetFileName(f);
+                    if (name.Contains(".tmp.") || name.Contains(".tmp_"))
+                    {
+                        try { File.Delete(f); } catch { }
+                    }
+                }
             }
             catch { }
+        }
+
+        private void PutMemCache(string songId, SubsonicLyricsResult value)
+        {
+            if (string.IsNullOrEmpty(songId)) return;
+            if (_memCache.Count >= MaxMemCacheEntries && !_memCache.ContainsKey(songId))
+            {
+                int removed = 0;
+                foreach (var key in _memCache.Keys)
+                {
+                    if (_memCache.TryRemove(key, out _))
+                    {
+                        if (++removed >= MemCacheEvictCount) break;
+                    }
+                }
+            }
+            _memCache[songId] = value;
         }
 
         private static string GetSafeKey(string songId)
@@ -84,7 +110,7 @@ namespace MusicBeePlugin
                     if (parsed.HasLyrics)
                     {
                         var lrcResult = new SubsonicLyricsResult(parsed.Text, isSynced: true);
-                        _memCache[songId] = lrcResult;
+                        PutMemCache(songId, lrcResult);
                         result = lrcResult;
                         return true;
                     }
@@ -97,7 +123,7 @@ namespace MusicBeePlugin
                     var parsed = SubsonicLyricsFormatter.NormalizeRawLyrics(raw);
                     if (parsed.HasLyrics)
                     {
-                        _memCache[songId] = parsed;
+                        PutMemCache(songId, parsed);
                         result = parsed;
                         return true;
                     }
@@ -151,12 +177,12 @@ namespace MusicBeePlugin
             if (fetched != null && fetched.HasLyrics)
             {
                 SaveToDisk(song.Id, fetched);
-                _memCache[song.Id] = fetched;
+                PutMemCache(song.Id, fetched);
                 return fetched;
             }
 
             if (client.LastError == null)
-                _memCache[song.Id] = SubsonicLyricsResult.Empty;
+                PutMemCache(song.Id, SubsonicLyricsResult.Empty);
 
             return SubsonicLyricsResult.Empty;
         }
@@ -175,11 +201,8 @@ namespace MusicBeePlugin
 
                     string target = result.IsSynced ? GetLrcPath(songId) : GetTxtPath(songId);
                     string stale = result.IsSynced ? GetTxtPath(songId) : GetLrcPath(songId);
-                    string tmp = target + ".tmp." + Guid.NewGuid().ToString("N");
 
-                    File.WriteAllText(tmp, result.Text, Utf8NoBom);
-                    if (File.Exists(target)) File.Delete(target);
-                    File.Move(tmp, target);
+                    NavidromeCatalog.WriteTextAtomic(target, result.Text);
                     if (File.Exists(stale)) File.Delete(stale);
                 }
                 catch { }

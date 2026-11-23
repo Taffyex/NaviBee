@@ -50,7 +50,7 @@ namespace MusicBeePlugin
         internal static void ConfigureRequest(HttpWebRequest req)
         {
             if (req == null) return;
-            req.UserAgent = "NaviBee/1.0.2";
+            req.UserAgent = "NaviBee/1.1.0";
             try
             {
                 var sp = ServicePointManager.FindServicePoint(req.RequestUri);
@@ -161,6 +161,12 @@ namespace MusicBeePlugin
 
         public IDictionary<string, object> SendRequest(string endpoint, IDictionary<string, string> queryParams = null, int timeoutMs = 15000)
         {
+            return SendRequest(endpoint, queryParams, timeoutMs, out _);
+        }
+
+        public IDictionary<string, object> SendRequest(string endpoint, IDictionary<string, string> queryParams, int timeoutMs, out Exception error)
+        {
+            error = null;
             LastError = null;
             try
             {
@@ -190,6 +196,7 @@ namespace MusicBeePlugin
             }
             catch (Exception ex)
             {
+                error = ex;
                 LastError = ex;
                 return null;
             }

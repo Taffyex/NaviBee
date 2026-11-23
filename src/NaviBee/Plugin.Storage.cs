@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -71,19 +70,7 @@ namespace MusicBeePlugin
         public Image GetIcon()
         {
             if (_storageIcon != null) return _storageIcon;
-            var bmp = new Bitmap(32, 32);
-            using (var g = Graphics.FromImage(bmp))
-            {
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.Clear(Color.Transparent);
-                using (var bg = new SolidBrush(Color.FromArgb(0, 122, 204)))
-                    g.FillEllipse(bg, 2, 2, 28, 28);
-                using (var pen = new Pen(Color.White, 2.2f))
-                    g.DrawEllipse(pen, 8, 8, 16, 16);
-                using (var dot = new SolidBrush(Color.White))
-                    g.FillEllipse(dot, 13, 13, 6, 6);
-            }
-            _storageIcon = bmp;
+            _storageIcon = StorageIconRenderer.RenderForCurrentDpi();
             return _storageIcon;
         }
 
@@ -91,8 +78,7 @@ namespace MusicBeePlugin
         {
             try
             {
-                var playlists = Subsonic?.GetPlaylists();
-                if (playlists == null) return;
+                if (Subsonic == null || !Subsonic.TryGetPlaylists(out var playlists, out _)) return;
                 lock (CacheLock)
                 {
                     PlaylistLookup.Clear();
@@ -138,14 +124,32 @@ namespace MusicBeePlugin
             }
         }
 
+        private static void RegisterSongsBatch(IReadOnlyList<SubsonicSong> songs)
+        {
+            if (songs == null || songs.Count == 0) return;
+            lock (CacheLock)
+            {
+                for (int i = 0; i < songs.Count; i++)
+                {
+                    var song = songs[i];
+                    if (song == null || string.IsNullOrEmpty(song.Id)) continue;
+                    string rel = !string.IsNullOrEmpty(song.CachedRelativePath)
+                        ? song.CachedRelativePath
+                        : SubsonicUrlHelper.BuildRelativePath(song);
+                    SongByPath[rel] = song;
+                    SongById[song.Id] = song;
+                }
+            }
+        }
+
         private static KeyValuePair<byte, string>[][] ToTagMatrix(IReadOnlyList<SubsonicSong> songs)
         {
             if (songs == null || songs.Count == 0) return new KeyValuePair<byte, string>[0][];
+            RegisterSongsBatch(songs);
             var result = new KeyValuePair<byte, string>[songs.Count][];
             for (int i = 0; i < songs.Count; i++)
             {
                 var s = songs[i];
-                RegisterSong(s);
                 result[i] = s.CachedTags ?? SubsonicUrlHelper.ToTags(s);
             }
             return result;
@@ -220,18 +224,28 @@ namespace MusicBeePlugin
 
                 if (string.Equals(clean, "Playlists", StringComparison.OrdinalIgnoreCase))
                 {
-                    var playlists = Subsonic.GetPlaylists();
                     var list = new List<string>();
-                    lock (CacheLock)
+                    if (Subsonic != null && Subsonic.TryGetPlaylists(out var playlists, out _))
                     {
-                        PlaylistLookup.Clear();
-                        foreach (var p in playlists)
+                        lock (CacheLock)
                         {
-                            if (!string.IsNullOrEmpty(p.Name))
+                            PlaylistLookup.Clear();
+                            foreach (var p in playlists)
                             {
-                                PlaylistLookup[p.Name] = p.Id;
-                                list.Add("Playlists\\" + p.Name);
+                                if (!string.IsNullOrEmpty(p.Name))
+                                {
+                                    PlaylistLookup[p.Name] = p.Id;
+                                    list.Add("Playlists\\" + p.Name);
+                                }
                             }
+                        }
+                    }
+                    else
+                    {
+                        lock (CacheLock)
+                        {
+                            foreach (var name in PlaylistLookup.Keys)
+                                list.Add("Playlists\\" + name);
                         }
                     }
                     return list.ToArray();

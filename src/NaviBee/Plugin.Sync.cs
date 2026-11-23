@@ -1,24 +1,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace MusicBeePlugin
 {
-    public struct TrackTagSnapshot
-    {
-        public bool IsLoved;
-        public int Stars;
-    }
-
-    public struct TrackPlayBaseline
-    {
-        public int PlayCount;
-        public int SkipCount;
-        public bool HasPlayCount;
-        public bool HasSkipCount;
-    }
-
     public partial class Plugin
     {
         private static readonly object _nowPlayingLock = new object();
@@ -91,7 +78,8 @@ namespace MusicBeePlugin
                     }
                     if (song != null)
                     {
-                        LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "pid_tag", persist: true);
+                        if (LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "pid_tag", persist: false))
+                            LocalLibraryLinker.Instance.ScheduleSaveToDisk();
                         return true;
                     }
                 }
@@ -103,16 +91,18 @@ namespace MusicBeePlugin
             song = NavidromeCatalog.Instance.FindSongByServerPathSuffix(sourceFileUrl);
             if (song != null)
             {
-                LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "path_suffix", persist: true);
+                if (LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "path_suffix", persist: false))
+                    LocalLibraryLinker.Instance.ScheduleSaveToDisk();
                 return true;
             }
 
             var info = ReadLocalTrackInfo(sourceFileUrl, Settings != null ? Settings.GetPidMetaDataType() : MetaDataType.Custom16);
             song = NavidromeCatalog.Instance.FindSongByMetadata(
-                info.Artist, info.AlbumArtist, info.Album, info.DiscNo, info.TrackNo, info.Title, info.DurationSeconds);
+                info.Artist, info.AlbumArtist, info.Album, info.DiscNo, info.TrackNo, info.Title, info.DurationSeconds, info.PrimaryArtist);
             if (song != null)
             {
-                LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "metadata", persist: true);
+                if (LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "metadata", persist: false))
+                    LocalLibraryLinker.Instance.ScheduleSaveToDisk();
                 return true;
             }
 
@@ -293,13 +283,21 @@ namespace MusicBeePlugin
 
             NavidromeCatalog.Instance.IncrementPlayCount(song.Id);
             string label = FriendlyErrors.FormatTrackLabel(song);
+            long playedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var ct = ShutdownToken;
 
             Task.Run(() =>
             {
                 if (ct.IsCancellationRequested) return;
-                if (Subsonic.Scrobble(song.Id, submission: true))
+                if (Subsonic != null && Subsonic.Scrobble(song.Id, submission: true, playedAtMs))
+                {
                     Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: scrobbled \"{label}\"");
+                }
+                else
+                {
+                    PendingSyncQueue.Instance.EnqueueScrobble(song.Id, playedAtMs);
+                    Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome offline: queued scrobble for \"{label}\"");
+                }
             }, ct);
         }
 
@@ -339,6 +337,8 @@ namespace MusicBeePlugin
 
         private void OnTagsChanged(string sourceFileUrl, NotificationType type)
         {
+            if (Volatile.Read(ref _suppressTagChangeNotifications) > 0)
+                return;
             if (!TryResolveSong(sourceFileUrl, out var song, allowPlaceholder: false))
                 return;
 
@@ -374,13 +374,23 @@ namespace MusicBeePlugin
             if (pushStar)
             {
                 NavidromeCatalog.Instance.UpdateStarred(song.Id, isLoved);
-                Task.Run(() => { if (!ct.IsCancellationRequested) Subsonic.Star(song.Id, isLoved); }, ct);
+                Task.Run(() =>
+                {
+                    if (ct.IsCancellationRequested) return;
+                    if (Subsonic == null || !Subsonic.Star(song.Id, isLoved))
+                        PendingSyncQueue.Instance.EnqueueStar(song.Id, isLoved);
+                }, ct);
             }
 
             if (pushRating)
             {
                 NavidromeCatalog.Instance.UpdateRating(song.Id, stars);
-                Task.Run(() => { if (!ct.IsCancellationRequested) Subsonic.SetRating(song.Id, stars); }, ct);
+                Task.Run(() =>
+                {
+                    if (ct.IsCancellationRequested) return;
+                    if (Subsonic == null || !Subsonic.SetRating(song.Id, stars))
+                        PendingSyncQueue.Instance.EnqueueRating(song.Id, stars);
+                }, ct);
             }
         }
     }

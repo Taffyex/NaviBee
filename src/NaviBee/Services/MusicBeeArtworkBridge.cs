@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace MusicBeePlugin
@@ -78,9 +79,8 @@ namespace MusicBeePlugin
             }
         }
 
-        internal static void RunOnUiThread(Action action)
+        private static Control ResolveHostControl()
         {
-            if (action == null) return;
             try
             {
                 Control hostControl = null;
@@ -92,18 +92,58 @@ namespace MusicBeePlugin
                 }
                 if (hostControl == null && Application.OpenForms.Count > 0)
                     hostControl = Application.OpenForms[0];
+                return hostControl;
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
-                if (hostControl != null && !hostControl.IsDisposed && hostControl.IsHandleCreated)
+        internal static void RunOnUiThread(Action action)
+        {
+            if (action == null) return;
+            Control hostControl = ResolveHostControl();
+            if (hostControl != null && !hostControl.IsDisposed && hostControl.IsHandleCreated)
+            {
+                try
                 {
                     if (hostControl.InvokeRequired)
-                    {
                         hostControl.Invoke(action);
-                        return;
-                    }
+                    else
+                        action();
                 }
+                catch { }
+                return;
             }
-            catch { }
-            action();
+
+            if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA && Application.OpenForms.Count == 0)
+            {
+                try { action(); } catch { }
+            }
+        }
+
+        internal static void BeginRunOnUiThread(Action action)
+        {
+            if (action == null) return;
+            Control hostControl = ResolveHostControl();
+            if (hostControl != null && !hostControl.IsDisposed && hostControl.IsHandleCreated)
+            {
+                try
+                {
+                    if (hostControl.InvokeRequired)
+                        hostControl.BeginInvoke(action);
+                    else
+                        action();
+                }
+                catch { }
+                return;
+            }
+
+            if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA && Application.OpenForms.Count == 0)
+            {
+                try { action(); } catch { }
+            }
         }
 
         private static bool AttachCore(string trackUrl, object arObj)

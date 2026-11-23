@@ -126,15 +126,25 @@ namespace MusicBeePlugin
                     ? song.CachedRelativePath
                     : SubsonicUrlHelper.BuildRelativePath(song));
 
-                System.Threading.Tasks.Task<SubsonicLyricsResult> lyricsTask = null;
                 if (LyricsCache.Instance.TryGetCached(song.Id, out var cachedLyrics))
                 {
                     if (cachedLyrics.HasLyrics)
-                        MusicBeeLyricsBridge.AttachLyrics(fullUrl, cachedLyrics.Text, cachedLyrics.IsSynced, refreshActivePanel: false);
+                        MusicBeeLyricsBridge.AttachLyrics(fullUrl, cachedLyrics.Text, cachedLyrics.IsSynced, refreshActivePanel: false, synchronous: false);
                 }
                 else
                 {
-                    lyricsTask = LyricsCache.Instance.GetOrFetchAsync(song, Subsonic);
+                    LyricsCache.Instance.GetOrFetchAsync(song, Subsonic).ContinueWith(t =>
+                    {
+                        try
+                        {
+                            if (t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion &&
+                                t.Result != null && t.Result.HasLyrics)
+                            {
+                                MusicBeeLyricsBridge.AttachLyrics(fullUrl, t.Result.Text, t.Result.IsSynced, refreshActivePanel: true, synchronous: false);
+                            }
+                        }
+                        catch { }
+                    });
                 }
 
                 Stream streamResult = AudioStreamCache.Instance.TryOpenCachedStream(song, bitrate);
@@ -146,16 +156,6 @@ namespace MusicBeePlugin
                         ? new ConnectStream(streamUri, expectedSize, AudioStreamCache.Instance.CreateTeeTempPath(song, bitrate), completed =>
                             AudioStreamCache.Instance.CommitTeeFile(song, bitrate, completed, cacheMaxMb))
                         : new ConnectStream(streamUri, expectedSize);
-                }
-
-                if (lyricsTask != null)
-                {
-                    try
-                    {
-                        if (lyricsTask.Wait(250) && lyricsTask.Result != null && lyricsTask.Result.HasLyrics)
-                            MusicBeeLyricsBridge.AttachLyrics(fullUrl, lyricsTask.Result.Text, lyricsTask.Result.IsSynced, refreshActivePanel: false);
-                    }
-                    catch { }
                 }
 
                 return streamResult;
@@ -176,17 +176,27 @@ namespace MusicBeePlugin
             var list = new List<KeyValuePair<string, string>>();
             try
             {
-                var playlists = Subsonic.GetPlaylists();
-                lock (CacheLock)
+                if (Subsonic != null && Subsonic.TryGetPlaylists(out var playlists, out _))
                 {
-                    PlaylistLookup.Clear();
-                    foreach (var p in playlists)
+                    lock (CacheLock)
                     {
-                        if (!string.IsNullOrEmpty(p.Name))
+                        PlaylistLookup.Clear();
+                        foreach (var p in playlists)
                         {
-                            PlaylistLookup[p.Name] = p.Id;
-                            list.Add(new KeyValuePair<string, string>(p.Id, p.Name));
+                            if (!string.IsNullOrEmpty(p.Name))
+                            {
+                                PlaylistLookup[p.Name] = p.Id;
+                                list.Add(new KeyValuePair<string, string>(p.Id, p.Name));
+                            }
                         }
+                    }
+                }
+                else
+                {
+                    lock (CacheLock)
+                    {
+                        foreach (var kv in PlaylistLookup)
+                            list.Add(new KeyValuePair<string, string>(kv.Value, kv.Key));
                     }
                 }
             }

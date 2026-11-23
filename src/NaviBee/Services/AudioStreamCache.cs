@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace MusicBeePlugin
@@ -32,6 +33,10 @@ namespace MusicBeePlugin
 
         private string _cacheDir;
         private readonly ConcurrentDictionary<string, object> _inFlightLocks = new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        private readonly SemaphoreSlim _downloadGate = new SemaphoreSlim(2, 2);
+        private readonly object _ctsLock = new object();
+        private CancellationTokenSource _sessionCts = new CancellationTokenSource();
+        private CancellationTokenSource _prefetchCts;
 
         public AudioStreamCache()
         {
@@ -47,8 +52,48 @@ namespace MusicBeePlugin
             {
                 if (!Directory.Exists(_cacheDir))
                     Directory.CreateDirectory(_cacheDir);
+                CleanupOrphanTempFiles(_cacheDir);
             }
             catch { }
+        }
+
+        private static void CleanupOrphanTempFiles(string dir)
+        {
+            try
+            {
+                foreach (var f in Directory.GetFiles(dir))
+                {
+                    string name = Path.GetFileName(f);
+                    if (name.Contains(".tmp_") || name.Contains(".tee_"))
+                    {
+                        try { File.Delete(f); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        public void StopBackgroundDownloads()
+        {
+            lock (_ctsLock)
+            {
+                try { _prefetchCts?.Cancel(); } catch { }
+                try { _prefetchCts?.Dispose(); } catch { }
+                _prefetchCts = null;
+
+                var oldSession = _sessionCts;
+                _sessionCts = new CancellationTokenSource();
+                try { oldSession?.Cancel(); } catch { }
+                try { oldSession?.Dispose(); } catch { }
+            }
+        }
+
+        private CancellationToken GetSessionToken()
+        {
+            lock (_ctsLock)
+            {
+                return _sessionCts.Token;
+            }
         }
 
         private static string GetSafeId(string songId)
@@ -77,6 +122,16 @@ namespace MusicBeePlugin
             return Path.Combine(_cacheDir, $"{safeId}.{ext}");
         }
 
+        public static bool IsValidDownloadedSize(long actualBytes, long httpContentLength, SubsonicSong song, int transcodeBitrate)
+        {
+            if (actualBytes <= 0) return false;
+            if (httpContentLength > 0)
+                return actualBytes == httpContentLength;
+            if (transcodeBitrate <= 0 && song != null && song.Size > 0)
+                return actualBytes >= (long)(song.Size * 0.90);
+            return true;
+        }
+
         public Stream TryOpenCachedStream(SubsonicSong song, int transcodeBitrate = 0)
         {
             string path = GetTrackFilePath(song, transcodeBitrate);
@@ -88,11 +143,7 @@ namespace MusicBeePlugin
                 var fi = new FileInfo(path);
                 if (fi.Length > 0)
                 {
-                    // Size check only applies to un-transcoded original audio
-                    if (transcodeBitrate <= 0 && song.Size > 0 && fi.Length < song.Size)
-                        return null;
-
-                    File.SetLastAccessTimeUtc(path, DateTime.UtcNow);
+                    try { File.SetLastWriteTimeUtc(path, DateTime.UtcNow); } catch { }
                     return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                 }
             }
@@ -125,7 +176,7 @@ namespace MusicBeePlugin
                 try
                 {
                     var fi = new FileInfo(tempPath);
-                    if (fi.Length == 0 || (transcodeBitrate <= 0 && song.Size > 0 && fi.Length < song.Size))
+                    if (!IsValidDownloadedSize(fi.Length, -1, song, transcodeBitrate))
                     {
                         try { File.Delete(tempPath); } catch { }
                         return;
@@ -133,6 +184,7 @@ namespace MusicBeePlugin
 
                     if (File.Exists(target)) File.Delete(target);
                     File.Move(tempPath, target);
+                    try { File.SetLastWriteTimeUtc(target, DateTime.UtcNow); } catch { }
                     EnforceQuota(maxCacheMb);
                 }
                 catch
@@ -146,78 +198,120 @@ namespace MusicBeePlugin
             }
         }
 
-        public void StartBackgroundCacheTrack(SubsonicSong song, SubsonicClient client, int maxCacheMb, int transcodeBitrate = 0)
+        public void StartBackgroundCacheTrack(SubsonicSong song, SubsonicClient client, int maxCacheMb, int transcodeBitrate = 0, CancellationToken ct = default)
         {
             if (song == null || client == null || maxCacheMb == 0) return;
             string path = GetTrackFilePath(song, transcodeBitrate);
             if (string.IsNullOrEmpty(path) || File.Exists(path)) return;
 
+            CancellationToken sessionToken = GetSessionToken();
             object lockObj = _inFlightLocks.GetOrAdd(path, _ => new object());
             Task.Run(() =>
             {
-                lock (lockObj)
+                using (var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, sessionToken))
                 {
-                    if (File.Exists(path)) return;
-                    string tmpPath = path + ".tmp_" + Guid.NewGuid().ToString("N");
+                    var token = linked.Token;
+                    bool gateAcquired = false;
+                    string tmpPath = null;
                     try
                     {
-                        Uri uri = client.GetStreamUri(song.Id, transcodeBitrate);
-                        var req = (HttpWebRequest)WebRequest.Create(uri);
-                        req.Timeout = 30000;
-                        req.ReadWriteTimeout = 30000;
-                        SubsonicClient.ConfigureRequest(req);
+                        _downloadGate.Wait(token);
+                        gateAcquired = true;
 
-                        using (var resp = (HttpWebResponse)req.GetResponse())
+                        lock (lockObj)
                         {
-                            if (SubsonicClient.IsNonAudioErrorContentType(resp.ContentType))
+                            if (token.IsCancellationRequested || File.Exists(path)) return;
+                            tmpPath = path + ".tmp_" + Guid.NewGuid().ToString("N");
+
+                            Uri uri = client.GetStreamUri(song.Id, transcodeBitrate);
+                            var req = (HttpWebRequest)WebRequest.Create(uri);
+                            req.Timeout = 30000;
+                            req.ReadWriteTimeout = 30000;
+                            SubsonicClient.ConfigureRequest(req);
+
+                            long contentLength = -1;
+                            using (var reg = token.Register(() => { try { req.Abort(); } catch { } }))
+                            using (var resp = (HttpWebResponse)req.GetResponse())
+                            {
+                                if (SubsonicClient.IsNonAudioErrorContentType(resp.ContentType))
+                                    return;
+
+                                contentLength = resp.ContentLength;
+                                using (var inStream = resp.GetResponseStream())
+                                using (var outStream = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                                {
+                                    if (inStream != null)
+                                    {
+                                        byte[] buf = new byte[32768];
+                                        int read;
+                                        while ((read = inStream.Read(buf, 0, buf.Length)) > 0)
+                                        {
+                                            if (token.IsCancellationRequested)
+                                                return;
+                                            outStream.Write(buf, 0, read);
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (token.IsCancellationRequested)
                                 return;
 
-                            using (var inStream = resp.GetResponseStream())
-                            using (var outStream = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                            {
-                                inStream?.CopyTo(outStream);
-                            }
-                        }
+                            var fi = new FileInfo(tmpPath);
+                            if (!fi.Exists || !IsValidDownloadedSize(fi.Length, contentLength, song, transcodeBitrate))
+                                return;
 
-                        var fi = new FileInfo(tmpPath);
-                        if (!fi.Exists || fi.Length == 0 || (transcodeBitrate <= 0 && song.Size > 0 && fi.Length < song.Size))
-                        {
-                            try { File.Delete(tmpPath); } catch { }
-                            return;
+                            if (File.Exists(path)) File.Delete(path);
+                            File.Move(tmpPath, path);
+                            tmpPath = null;
+                            try { File.SetLastWriteTimeUtc(path, DateTime.UtcNow); } catch { }
+                            EnforceQuota(maxCacheMb);
                         }
-
-                        if (File.Exists(path)) File.Delete(path);
-                        File.Move(tmpPath, path);
-                        EnforceQuota(maxCacheMb);
                     }
-                    catch
-                    {
-                        try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
-                    }
+                    catch { }
                     finally
                     {
+                        if (!string.IsNullOrEmpty(tmpPath))
+                        {
+                            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+                        }
+                        if (gateAcquired)
+                        {
+                            try { _downloadGate.Release(); } catch { }
+                        }
                         _inFlightLocks.TryRemove(path, out _);
                     }
                 }
             });
         }
 
-        public void PrefetchNextTrack(SubsonicSong nextSong, SubsonicClient client, NavidromeSettings settings)
+        public void PrefetchNextTrack(SubsonicSong nextSong, SubsonicClient client, NavidromeSettings settings, CancellationToken ct = default)
         {
             if (nextSong == null || client == null || settings == null || !settings.PrefetchNextTrack)
                 return;
+
+            CancellationToken prefetchToken;
+            lock (_ctsLock)
+            {
+                try { _prefetchCts?.Cancel(); } catch { }
+                try { _prefetchCts?.Dispose(); } catch { }
+                _prefetchCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _sessionCts.Token);
+                prefetchToken = _prefetchCts.Token;
+            }
 
             Task.Run(() =>
             {
                 try
                 {
+                    if (prefetchToken.IsCancellationRequested) return;
                     string cId = !string.IsNullOrEmpty(nextSong.CanonicalCoverId) ? nextSong.CanonicalCoverId : nextSong.CoverArt;
                     if (!string.IsNullOrEmpty(cId))
                         client.GetCoverArt(cId, settings.ArtworkSize);
-                    StartBackgroundCacheTrack(nextSong, client, settings.AudioCacheMaxMb, settings.TranscodeBitrate);
+                    if (!prefetchToken.IsCancellationRequested)
+                        StartBackgroundCacheTrack(nextSong, client, settings.AudioCacheMaxMb, settings.TranscodeBitrate, prefetchToken);
                 }
                 catch { }
-            });
+            }, prefetchToken);
         }
 
         private void EnforceQuota(int maxCacheMb)
@@ -233,7 +327,7 @@ namespace MusicBeePlugin
                 if (total > maxBytes)
                 {
                     long targetBytes = (long)(maxBytes * 0.85);
-                    foreach (var f in files.OrderBy(f => f.LastAccessTimeUtc))
+                    foreach (var f in files.OrderBy(f => f.LastWriteTimeUtc))
                     {
                         try
                         {
@@ -267,6 +361,7 @@ namespace MusicBeePlugin
 
         public void ClearCache()
         {
+            StopBackgroundDownloads();
             try
             {
                 if (Directory.Exists(_cacheDir))

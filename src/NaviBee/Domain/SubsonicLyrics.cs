@@ -30,6 +30,10 @@ namespace MusicBeePlugin
             @"^\s*\[\d{1,3}:\d{2}(?:\.\d{1,3})?\]",
             RegexOptions.Compiled | RegexOptions.Multiline);
 
+        private static readonly Regex LrcMetadataTagLineRegex = new Regex(
+            @"^\s*\[(?:ar|ti|al|by|offset):",
+            RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
         private sealed class TimedLine
         {
             public long EffectiveMs;
@@ -82,12 +86,16 @@ namespace MusicBeePlugin
             if (string.IsNullOrEmpty(text))
                 return SubsonicLyricsResult.Empty;
 
-            bool hasTimestamps = LrcTimestampLineRegex.IsMatch(text);
+            var tsMatch = LrcTimestampLineRegex.Match(text);
+            bool hasTimestamps = tsMatch.Success;
             if (hasTimestamps)
             {
-                int firstBracket = text.IndexOf('[');
-                if (firstBracket > 0)
-                    text = text.Substring(firstBracket).TrimStart();
+                int trimStart = tsMatch.Index;
+                var metaMatch = LrcMetadataTagLineRegex.Match(text);
+                if (metaMatch.Success && metaMatch.Index < trimStart)
+                    trimStart = metaMatch.Index;
+                if (trimStart > 0)
+                    text = text.Substring(trimStart).TrimStart();
             }
 
             text = text.Replace("\n", "\r\n");

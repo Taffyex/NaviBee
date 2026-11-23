@@ -46,7 +46,17 @@ namespace MusicBeePlugin
             _mostPlayedSongs = mostPlayed;
         }
 
-        public void UpdateStarred(string songId, bool starred)
+        private void UpdateSingleSongTagArrayLocked(SubsonicSong s)
+        {
+            s.CachedTags = null;
+            s.CachedTags = SubsonicUrlHelper.ToTags(s);
+            if (s.CatalogIndex >= 0 && _allTagArrays != null && s.CatalogIndex < _allTagArrays.Length)
+                _allTagArrays[s.CatalogIndex] = s.CachedTags;
+            else
+                RebuildAllTagArraysLocked();
+        }
+
+        public void UpdateStarred(string songId, bool starred, bool scheduleSave = true)
         {
             if (string.IsNullOrEmpty(songId)) return;
             bool changed = false;
@@ -60,17 +70,15 @@ namespace MusicBeePlugin
                     else if (!starred)
                         _starredSongs.Remove(s);
 
-                    s.CachedTags = null;
-                    s.CachedTags = SubsonicUrlHelper.ToTags(s);
-                    RebuildAllTagArraysLocked();
+                    UpdateSingleSongTagArrayLocked(s);
                     changed = true;
                 }
             }
-            if (changed)
+            if (changed && scheduleSave)
                 ScheduleSaveToDisk();
         }
 
-        public void UpdateRating(string songId, int userRating)
+        public void UpdateRating(string songId, int userRating, bool scheduleSave = true)
         {
             if (string.IsNullOrEmpty(songId)) return;
             int clamped = Math.Max(0, Math.Min(5, userRating));
@@ -86,13 +94,11 @@ namespace MusicBeePlugin
                         _topRatedSongs.Remove(s);
                     _topRatedSongs.Sort((a, b) => b.UserRating.CompareTo(a.UserRating));
 
-                    s.CachedTags = null;
-                    s.CachedTags = SubsonicUrlHelper.ToTags(s);
-                    RebuildAllTagArraysLocked();
+                    UpdateSingleSongTagArrayLocked(s);
                     changed = true;
                 }
             }
-            if (changed)
+            if (changed && scheduleSave)
                 ScheduleSaveToDisk();
         }
 
@@ -135,9 +141,7 @@ namespace MusicBeePlugin
                             _mostPlayedSongs.Add(s);
                         _mostPlayedSongs.Sort((a, b) => b.PlayCount.CompareTo(a.PlayCount));
 
-                        s.CachedTags = null;
-                        s.CachedTags = SubsonicUrlHelper.ToTags(s);
-                        RebuildAllTagArraysLocked();
+                        UpdateSingleSongTagArrayLocked(s);
                     }
                 }
             }
@@ -197,79 +201,87 @@ namespace MusicBeePlugin
             // For catalogs <= 25,000 tracks, a fast paginated search3 captures every playcount,
             // lastPlayed, and rating change made in Synfonium/mobile clients without missing anything.
             bool fetchedViaSearch = false;
+            bool fallbackHadError = false;
             if (songCountSnapshot <= 25000 && !ct.IsCancellationRequested)
             {
                 try
                 {
                     int offset = 0;
-                    const int pageSize = 1000;
-                    int fetchedTotal = 0;
-                    while (!ct.IsCancellationRequested && offset < 26000)
+                    const int pageSize = 500;
+                    int maxOffset = Math.Max(26000, songCountSnapshot + 2000);
+                    var seenSearchIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    bool searchHadError = false;
+                    int consecutiveZeroNew = 0;
+
+                    while (!ct.IsCancellationRequested && offset < maxOffset)
                     {
-                        var page = client.SearchSongs(pageSize, offset);
-                        if (page == null || page.Count == 0) break;
-                        fetchedTotal += page.Count;
+                        List<SubsonicSong> page = null;
+                        bool ok = false;
+                        for (int attempt = 0; attempt < 2 && !ct.IsCancellationRequested; attempt++)
+                        {
+                            if (attempt > 0 && !WaitBackoff(500, ct))
+                                return false;
+                            if (client.TrySearchSongs(pageSize, offset, "", out page, out _, 60000))
+                            {
+                                ok = true;
+                                break;
+                            }
+                        }
+
+                        if (!ok)
+                        {
+                            searchHadError = true;
+                            break;
+                        }
+                        if (page == null || page.Count == 0)
+                            break;
+
+                        int addedThisPage = 0;
                         foreach (var s in page)
                         {
-                            if (string.IsNullOrEmpty(s.Id)) continue;
+                            if (s == null || string.IsNullOrEmpty(s.Id)) continue;
                             serverUpdates[s.Id] = s;
                             if (s.Starred) starredIds.Add(s.Id);
+                            if (seenSearchIds.Add(s.Id))
+                                addedThisPage++;
                         }
-                        if (page.Count < pageSize) break;
+
+                        if (addedThisPage == 0)
+                        {
+                            if (++consecutiveZeroNew >= 2)
+                                break;
+                        }
+                        else
+                        {
+                            consecutiveZeroNew = 0;
+                        }
+
                         offset += page.Count;
                     }
-                    fetchedViaSearch = fetchedTotal > 0;
+
+                    fetchedViaSearch = !searchHadError &&
+                                       seenSearchIds.Count > 0 &&
+                                       seenSearchIds.Count >= (int)Math.Ceiling(songCountSnapshot * 0.90);
                 }
                 catch { }
             }
 
-            // Fallback for very large catalogs (>25k tracks) or servers where empty search3 is unsupported:
+            // Fallback for very large catalogs (>25k tracks) or servers where empty search3 is unsupported/truncated:
             // paginate all recent albums newer than LastUserStateSyncUtc plus all highest-rated albums.
             if (!fetchedViaSearch && !ct.IsCancellationRequested)
             {
                 var albumIdsToProbe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                try
-                {
-                    const int pageSize = 500;
-                    for (int offset = 0; offset < 2500 && !ct.IsCancellationRequested; offset += pageSize)
-                    {
-                        var recent = client.GetAlbumList2("recent", pageSize, offset);
-                        if (recent == null || recent.Count == 0) break;
-                        bool reachedOlderThanCutoff = false;
-                        foreach (var a in recent)
-                        {
-                            if (!string.IsNullOrEmpty(a.Id)) albumIdsToProbe.Add(a.Id);
-                            if (lastSyncUtc != DateTime.MinValue &&
-                                TryParseUtcTimestamp(a.Played, out var albPlayed) &&
-                                albPlayed < lastSyncUtc.AddMinutes(-5))
-                            {
-                                reachedOlderThanCutoff = true;
-                            }
-                        }
-                        if (recent.Count < pageSize || reachedOlderThanCutoff) break;
-                    }
-
-                    for (int offset = 0; offset < 2500 && !ct.IsCancellationRequested; offset += pageSize)
-                    {
-                        var highest = client.GetAlbumList2("highest", pageSize, offset);
-                        if (highest == null || highest.Count == 0) break;
-                        foreach (var a in highest)
-                            if (!string.IsNullOrEmpty(a.Id)) albumIdsToProbe.Add(a.Id);
-                        if (highest.Count < pageSize) break;
-                    }
-                }
-                catch { }
+                if (!CollectAlbumIdsForUserState(client, "recent", lastSyncUtc, albumIdsToProbe, ct))
+                    fallbackHadError = true;
+                if (!CollectAlbumIdsForUserState(client, "highest", DateTime.MinValue, albumIdsToProbe, ct))
+                    fallbackHadError = true;
 
                 foreach (var albId in albumIdsToProbe)
                 {
                     if (ct.IsCancellationRequested) break;
-                    var albSongs = client.GetAlbum(albId);
-                    if (albSongs == null) continue;
+                    if (!client.TryGetAlbum(albId, out var albSongs, out _, 30000)) { fallbackHadError = true; continue; }
                     foreach (var s in albSongs)
-                    {
-                        if (!string.IsNullOrEmpty(s.Id))
-                            serverUpdates[s.Id] = s;
-                    }
+                        if (s != null && !string.IsNullOrEmpty(s.Id)) serverUpdates[s.Id] = s;
                 }
             }
 
@@ -279,7 +291,8 @@ namespace MusicBeePlugin
             bool anyChanged = false;
             lock (_lock)
             {
-                _meta.LastUserStateSyncUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                if (fetchedViaSearch || !fallbackHadError)
+                    _meta.LastUserStateSyncUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
                 for (int i = 0; i < _allSongs.Count; i++)
                 {
@@ -287,17 +300,23 @@ namespace MusicBeePlugin
                     bool songChanged = false;
 
                     bool serverStarred = !string.IsNullOrEmpty(local.Id) && starredIds.Contains(local.Id);
-                    if (local.Starred != serverStarred)
+                    bool targetStarred = PendingSyncQueue.Instance.TryGetPendingStar(local.Id, out bool pendingStar)
+                        ? pendingStar
+                        : serverStarred;
+                    if (local.Starred != targetStarred)
                     {
-                        local.Starred = serverStarred;
+                        local.Starred = targetStarred;
                         songChanged = true;
                     }
 
                     if (!string.IsNullOrEmpty(local.Id) && serverUpdates.TryGetValue(local.Id, out var remote))
                     {
-                        if (local.UserRating != remote.UserRating)
+                        int targetRating = PendingSyncQueue.Instance.TryGetPendingRating(local.Id, out int pendingRating)
+                            ? pendingRating
+                            : remote.UserRating;
+                        if (local.UserRating != targetRating)
                         {
-                            local.UserRating = remote.UserRating;
+                            local.UserRating = targetRating;
                             songChanged = true;
                         }
                         if (remote.PlayCount > local.PlayCount)
@@ -329,6 +348,45 @@ namespace MusicBeePlugin
 
             ScheduleSaveToDisk(1000);
             return anyChanged;
+        }
+
+        private static bool CollectAlbumIdsForUserState(
+            SubsonicClient client,
+            string listType,
+            DateTime cutoffUtc,
+            HashSet<string> target,
+            CancellationToken ct)
+        {
+            const int pageSize = 500;
+            int offset = 0;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                while (offset < 2500 && !ct.IsCancellationRequested)
+                {
+                    if (!client.TryGetAlbumList2(listType, pageSize, offset, out var page, out _, 60000))
+                        return false;
+                    if (page == null || page.Count == 0) break;
+                    bool reachedCutoff = false;
+                    int newIds = 0;
+                    foreach (var a in page)
+                    {
+                        if (a != null && !string.IsNullOrEmpty(a.Id))
+                        {
+                            target.Add(a.Id);
+                            if (seen.Add(a.Id)) newIds++;
+                        }
+                        if (cutoffUtc != DateTime.MinValue &&
+                            TryParseUtcTimestamp(a?.Played, out var albPlayed) &&
+                            albPlayed < cutoffUtc.AddMinutes(-5))
+                            reachedCutoff = true;
+                    }
+                    if (reachedCutoff || newIds == 0) break;
+                    offset += page.Count;
+                }
+                return true;
+            }
+            catch { return false; }
         }
     }
 }

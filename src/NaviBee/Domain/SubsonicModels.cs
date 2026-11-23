@@ -72,6 +72,9 @@ namespace MusicBeePlugin
 
         [ScriptIgnore]
         public KeyValuePair<byte, string>[] CachedTags { get; set; }
+
+        [ScriptIgnore]
+        internal int CatalogIndex { get; set; } = -1;
     }
 
     public class SubsonicAlbum

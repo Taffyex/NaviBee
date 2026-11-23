@@ -98,26 +98,20 @@ namespace MusicBeePlugin
         private void SaveLocked()
         {
             if (string.IsNullOrEmpty(_filePath)) return;
-            string tmp = _filePath + ".tmp_" + Guid.NewGuid().ToString("N");
             try
             {
-                string dir = Path.GetDirectoryName(_filePath);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-
                 string json = _serializer.Serialize(_byPath.Values.ToList());
-                File.WriteAllText(tmp, json, Encoding.UTF8);
-                if (File.Exists(_filePath)) File.Delete(_filePath);
-                File.Move(tmp, _filePath);
-                tmp = null;
+                NavidromeCatalog.WriteTextAtomic(_filePath, json);
             }
             catch { }
-            finally
+        }
+
+        public void Clear()
+        {
+            lock (_lock)
             {
-                if (!string.IsNullOrEmpty(tmp))
-                {
-                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-                }
+                _byPath.Clear();
+                SaveLocked();
             }
         }
 

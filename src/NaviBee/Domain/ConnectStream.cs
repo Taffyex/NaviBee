@@ -8,6 +8,7 @@ namespace MusicBeePlugin
     {
         private readonly Uri _uri;
         private long _estimatedLength;
+        private long _responseContentLength = -1;
         private HttpWebResponse _webResponse;
         private Stream _responseStream;
         private long _position;
@@ -72,6 +73,8 @@ namespace MusicBeePlugin
                 }
 
                 _webResponse = (HttpWebResponse)httpRequest.GetResponse();
+                if (fromOffset == 0)
+                    _responseContentLength = _webResponse != null && _webResponse.ContentLength > 0 ? _webResponse.ContentLength : -1;
                 ContentType = _webResponse.ContentType;
                 if (SubsonicClient.IsNonAudioErrorContentType(ContentType))
                     throw new IOException($"Server returned non-audio response ({ContentType}).");
@@ -134,6 +137,12 @@ namespace MusicBeePlugin
         {
             if (_teeAborted || _teeStream == null || string.IsNullOrEmpty(_teeTempPath))
                 return;
+
+            if (_responseContentLength > 0 && _position != _responseContentLength)
+            {
+                AbortTee();
+                return;
+            }
 
             string completedPath = _teeTempPath;
             _teeTempPath = null;

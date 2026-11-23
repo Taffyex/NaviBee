@@ -30,13 +30,17 @@ namespace MusicBeePlugin
             Type eStorageType = null;
             foreach (var t in types)
             {
-                if (!t.IsEnum) continue;
-                string[] names = Enum.GetNames(t);
-                if (ePicType == null && Array.IndexOf(names, "AlbumCover") >= 0)
-                    ePicType = t;
-                if (eStorageType == null && Array.IndexOf(names, "LinkToSource") >= 0)
-                    eStorageType = t;
-                if (ePicType != null && eStorageType != null) break;
+                try
+                {
+                    if (!t.IsEnum) continue;
+                    string[] names = Enum.GetNames(t);
+                    if (ePicType == null && Array.IndexOf(names, "AlbumCover") >= 0)
+                        ePicType = t;
+                    if (eStorageType == null && Array.IndexOf(names, "LinkToSource") >= 0)
+                        eStorageType = t;
+                    if (ePicType != null && eStorageType != null) break;
+                }
+                catch { }
             }
             if (ePicType == null || eStorageType == null) return false;
 
@@ -47,26 +51,30 @@ namespace MusicBeePlugin
             Type fpType = null;
             foreach (var t in types)
             {
-                foreach (var ctor in t.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                try
                 {
-                    var ps = ctor.GetParameters();
-                    if (ps.Length == 4 &&
-                        ps[0].ParameterType == ePicType &&
-                        ps[1].ParameterType == typeof(string) &&
-                        ps[2].ParameterType == eStorageType)
+                    foreach (var ctor in t.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                     {
-                        var fpCtor = ps[3].ParameterType.GetConstructor(new[] { typeof(string) });
-                        if (fpCtor != null)
+                        var ps = ctor.GetParameters();
+                        if (ps.Length == 4 &&
+                            ps[0].ParameterType == ePicType &&
+                            ps[1].ParameterType == typeof(string) &&
+                            ps[2].ParameterType == eStorageType)
                         {
-                            arType = t;
-                            fpType = ps[3].ParameterType;
-                            _filePathType = fpType;
-                            _artworkRefCtor = ctor;
-                            _filePathCtor = fpCtor;
-                            break;
+                            var fpCtor = ps[3].ParameterType.GetConstructor(new[] { typeof(string) });
+                            if (fpCtor != null)
+                            {
+                                arType = t;
+                                fpType = ps[3].ParameterType;
+                                _filePathType = fpType;
+                                _artworkRefCtor = ctor;
+                                _filePathCtor = fpCtor;
+                                break;
+                            }
                         }
                     }
                 }
+                catch { }
                 if (arType != null) break;
             }
             if (arType == null || fpType == null || _artworkRefCtor == null || _filePathCtor == null)
@@ -75,16 +83,20 @@ namespace MusicBeePlugin
             Type colType = null;
             foreach (var t in types)
             {
-                if (!t.IsValueType || t.IsEnum) continue;
-                if (t.GetMethods(InstFlags).Any(m =>
+                try
                 {
-                    var ps = m.GetParameters();
-                    return m.ReturnType == typeof(void) && ps.Length == 1 && ps[0].ParameterType == arType;
-                }))
-                {
-                    colType = t;
-                    break;
+                    if (!t.IsValueType || t.IsEnum) continue;
+                    if (t.GetMethods(InstFlags).Any(m =>
+                    {
+                        var ps = m.GetParameters();
+                        return m.ReturnType == typeof(void) && ps.Length == 1 && ps[0].ParameterType == arType;
+                    }))
+                    {
+                        colType = t;
+                        break;
+                    }
                 }
+                catch { }
             }
             if (colType == null) return false;
 
@@ -94,14 +106,18 @@ namespace MusicBeePlugin
             Type trackType = null;
             foreach (var t in types)
             {
-                if (t.IsValueType) continue;
-                var field = t.GetFields(InstFlags).FirstOrDefault(f => f.FieldType == colType);
-                if (field != null)
+                try
                 {
-                    trackType = t;
-                    _trackArtworkField = field;
-                    break;
+                    if (t.IsValueType) continue;
+                    var field = t.GetFields(InstFlags).FirstOrDefault(f => f.FieldType == colType);
+                    if (field != null)
+                    {
+                        trackType = t;
+                        _trackArtworkField = field;
+                        break;
+                    }
                 }
+                catch { }
             }
             if (trackType == null || _trackArtworkField == null) return false;
             _trackType = trackType;
@@ -151,18 +167,22 @@ namespace MusicBeePlugin
         {
             foreach (var t in types)
             {
-                MethodInfo candidate = null;
-                bool hasTagArrayMethod = false;
-                foreach (var m in t.GetMethods(staticFlags))
+                try
                 {
-                    var ps = m.GetParameters();
-                    if (candidate == null && m.ReturnType == trackType && ps.Length == 1 && ps[0].ParameterType == fpType)
-                        candidate = m;
-                    if (!hasTagArrayMethod && ps.Any(p => p.ParameterType == typeof(KeyValuePair<byte, string>[])))
-                        hasTagArrayMethod = true;
+                    MethodInfo candidate = null;
+                    bool hasTagArrayMethod = false;
+                    foreach (var m in t.GetMethods(staticFlags))
+                    {
+                        var ps = m.GetParameters();
+                        if (candidate == null && m.ReturnType == trackType && ps.Length == 1 && ps[0].ParameterType == fpType)
+                            candidate = m;
+                        if (!hasTagArrayMethod && ps.Any(p => p.ParameterType == typeof(KeyValuePair<byte, string>[])))
+                            hasTagArrayMethod = true;
+                    }
+                    if (candidate != null && hasTagArrayMethod)
+                        return candidate;
                 }
-                if (candidate != null && hasTagArrayMethod)
-                    return candidate;
+                catch { }
             }
             return null;
         }
@@ -171,18 +191,22 @@ namespace MusicBeePlugin
         {
             foreach (var t in types)
             {
-                MethodInfo candidate = null;
-                bool hasArtworkRefMethod = false;
-                foreach (var m in t.GetMethods(staticFlags))
+                try
                 {
-                    var ps = m.GetParameters();
-                    if (candidate == null && m.ReturnType == typeof(void) && ps.Length == 1 && ps[0].ParameterType == trackType)
-                        candidate = m;
-                    if (!hasArtworkRefMethod && ps.Any(p => p.ParameterType == arType))
-                        hasArtworkRefMethod = true;
+                    MethodInfo candidate = null;
+                    bool hasArtworkRefMethod = false;
+                    foreach (var m in t.GetMethods(staticFlags))
+                    {
+                        var ps = m.GetParameters();
+                        if (candidate == null && m.ReturnType == typeof(void) && ps.Length == 1 && ps[0].ParameterType == trackType)
+                            candidate = m;
+                        if (!hasArtworkRefMethod && ps.Any(p => p.ParameterType == arType))
+                            hasArtworkRefMethod = true;
+                    }
+                    if (candidate != null && hasArtworkRefMethod)
+                        return candidate;
                 }
-                if (candidate != null && hasArtworkRefMethod)
-                    return candidate;
+                catch { }
             }
             return null;
         }

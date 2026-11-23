@@ -47,27 +47,41 @@ namespace MusicBeePlugin
             return result;
         }
 
-        public List<SubsonicSong> GetAlbum(string albumId)
+        public bool TryGetAlbum(string albumId, out List<SubsonicSong> songs, out Exception error, int timeoutMs = 30000)
         {
-            var resp = SendRequest("getAlbum", new Dictionary<string, string> { { "id", albumId } });
-            var result = new List<SubsonicSong>();
-            if (resp != null && resp.TryGetValue("album", out var albumObj) && albumObj is IDictionary<string, object> album)
+            songs = new List<SubsonicSong>();
+            var resp = SendRequest("getAlbum", new Dictionary<string, string> { { "id", albumId } }, timeoutMs, out error);
+            if (resp == null) return false;
+            if (resp.TryGetValue("album", out var albumObj) && albumObj is IDictionary<string, object> album)
             {
                 if (album.TryGetValue("song", out var songListObj))
-                    result.AddRange(SubsonicJsonParser.CastList(songListObj, SubsonicJsonParser.ParseSong));
+                    songs.AddRange(SubsonicJsonParser.CastList(songListObj, SubsonicJsonParser.ParseSong));
             }
+            return true;
+        }
+
+        public List<SubsonicSong> GetAlbum(string albumId)
+        {
+            TryGetAlbum(albumId, out var result, out _);
             return result;
+        }
+
+        public bool TryGetPlaylists(out List<SubsonicPlaylist> playlists, out Exception error)
+        {
+            playlists = new List<SubsonicPlaylist>();
+            var resp = SendRequest("getPlaylists", null, 15000, out error);
+            if (resp == null) return false;
+            if (resp.TryGetValue("playlists", out var plObj) && plObj is IDictionary<string, object> plDict)
+            {
+                if (plDict.TryGetValue("playlist", out var listObj))
+                    playlists.AddRange(SubsonicJsonParser.CastList(listObj, SubsonicJsonParser.ParsePlaylist));
+            }
+            return true;
         }
 
         public List<SubsonicPlaylist> GetPlaylists()
         {
-            var resp = SendRequest("getPlaylists");
-            var result = new List<SubsonicPlaylist>();
-            if (resp != null && resp.TryGetValue("playlists", out var plObj) && plObj is IDictionary<string, object> playlists)
-            {
-                if (playlists.TryGetValue("playlist", out var listObj))
-                    result.AddRange(SubsonicJsonParser.CastList(listObj, SubsonicJsonParser.ParsePlaylist));
-            }
+            TryGetPlaylists(out var result, out _);
             return result;
         }
 
@@ -159,13 +173,14 @@ namespace MusicBeePlugin
         public bool DeletePlaylist(string playlistId) =>
             SendRequest("deletePlaylist", new Dictionary<string, string> { { "id", playlistId } }) != null;
 
-        public bool Scrobble(string songId, bool submission)
+        public bool Scrobble(string songId, bool submission, long? unixTimeMs = null)
         {
+            long ts = unixTimeMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var q = new Dictionary<string, string>
             {
                 { "id", songId },
                 { "submission", submission ? "true" : "false" },
-                { "time", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString() }
+                { "time", ts.ToString(System.Globalization.CultureInfo.InvariantCulture) }
             };
             return SendRequest("scrobble", q) != null;
         }
@@ -183,26 +198,39 @@ namespace MusicBeePlugin
             }) != null;
         }
 
-        public List<SubsonicAlbum> GetAlbumList2(string type = "alphabeticalByName", int size = 100, int offset = 0)
+        public bool TryGetAlbumList2(string type, int size, int offset, out List<SubsonicAlbum> albums, out Exception error, int timeoutMs = 60000)
         {
+            albums = new List<SubsonicAlbum>();
             var q = new Dictionary<string, string>
             {
-                { "type", type },
+                { "type", type ?? "alphabeticalByName" },
                 { "size", size.ToString() },
                 { "offset", offset.ToString() }
             };
-            var resp = SendRequest("getAlbumList2", q, 30000);
-            var result = new List<SubsonicAlbum>();
-            if (resp != null && resp.TryGetValue("albumList2", out var listObj) && listObj is IDictionary<string, object> listDict)
+            var resp = SendRequest("getAlbumList2", q, timeoutMs, out error);
+            if (resp == null) return false;
+            if (resp.TryGetValue("albumList2", out var listObj) && listObj is IDictionary<string, object> listDict)
             {
                 if (listDict.TryGetValue("album", out var albumsObj))
-                    result.AddRange(SubsonicJsonParser.CastList(albumsObj, SubsonicJsonParser.ParseAlbum));
+                    albums.AddRange(SubsonicJsonParser.CastList(albumsObj, SubsonicJsonParser.ParseAlbum));
             }
+            return true;
+        }
+
+        public bool TryGetAlbumList2(string type, int size, int offset, out List<SubsonicAlbum> albums, int timeoutMs = 60000)
+        {
+            return TryGetAlbumList2(type, size, offset, out albums, out _, timeoutMs);
+        }
+
+        public List<SubsonicAlbum> GetAlbumList2(string type = "alphabeticalByName", int size = 100, int offset = 0)
+        {
+            TryGetAlbumList2(type, size, offset, out var result, out _, 30000);
             return result;
         }
 
-        public List<SubsonicSong> SearchSongs(int count = 1000, int offset = 0, string query = "")
+        public bool TrySearchSongs(int count, int offset, string query, out List<SubsonicSong> songs, out Exception error, int timeoutMs = 60000)
         {
+            songs = new List<SubsonicSong>();
             var q = new Dictionary<string, string>
             {
                 { "query", query ?? "" },
@@ -211,13 +239,24 @@ namespace MusicBeePlugin
                 { "songCount", count.ToString() },
                 { "songOffset", offset.ToString() }
             };
-            var resp = SendRequest("search3", q, 30000);
-            var result = new List<SubsonicSong>();
-            if (resp != null && resp.TryGetValue("searchResult3", out var resObj) && resObj is IDictionary<string, object> resDict)
+            var resp = SendRequest("search3", q, timeoutMs, out error);
+            if (resp == null) return false;
+            if (resp.TryGetValue("searchResult3", out var resObj) && resObj is IDictionary<string, object> resDict)
             {
                 if (resDict.TryGetValue("song", out var songsObj))
-                    result.AddRange(SubsonicJsonParser.CastList(songsObj, SubsonicJsonParser.ParseSong));
+                    songs.AddRange(SubsonicJsonParser.CastList(songsObj, SubsonicJsonParser.ParseSong));
             }
+            return true;
+        }
+
+        public bool TrySearchSongs(int count, int offset, string query, out List<SubsonicSong> songs, int timeoutMs = 60000)
+        {
+            return TrySearchSongs(count, offset, query, out songs, out _, timeoutMs);
+        }
+
+        public List<SubsonicSong> SearchSongs(int count = 1000, int offset = 0, string query = "")
+        {
+            TrySearchSongs(count, offset, query, out var result, out _, 30000);
             return result;
         }
 
