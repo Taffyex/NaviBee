@@ -44,6 +44,12 @@ namespace MusicBeePlugin
         private Dictionary<string, SubsonicSong> _byPath = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, SubsonicSong> _byUniqueFileName = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, SubsonicSong> _byId = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, SubsonicSong> _byServerSuffix3 = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, SubsonicSong> _byServerSuffix2 = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, SubsonicSong> _byServerStem3 = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, SubsonicSong> _byServerStem2 = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, SubsonicSong> _byMetaExact = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, List<SubsonicSong>> _byMetaLoose = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, List<SubsonicSong>> _byArtist = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, List<SubsonicSong>> _byAlbumKey = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, List<string>> _albumsByArtist = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -363,6 +369,16 @@ namespace MusicBeePlugin
             {
                 _byId.TryGetValue(id, out var s);
                 return s;
+            }
+        }
+
+        public void LoadSongsForTesting(IEnumerable<SubsonicSong> songs)
+        {
+            var list = songs != null ? new List<SubsonicSong>(songs) : new List<SubsonicSong>();
+            lock (_lock)
+            {
+                _meta = new CatalogMetadata { ServerSongCount = list.Count };
+                BuildIndexes(list);
             }
         }
     }

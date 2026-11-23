@@ -39,20 +39,21 @@ namespace MusicBeePlugin
         {
             song = null;
             if (string.IsNullOrEmpty(sourceFileUrl)) return false;
-            string clean = CleanPath(sourceFileUrl);
 
-            song = NavidromeCatalog.Instance.FindSongByPath(clean)
-                ?? NavidromeCatalog.Instance.FindSongById(clean);
-            if (song != null) return true;
+            bool isVirtual = LocalLibraryLinker.IsVirtualNavidromeUrl(sourceFileUrl);
+            if (isVirtual)
+            {
+                string clean = CleanPath(sourceFileUrl);
+                song = NavidromeCatalog.Instance.FindSongByPath(clean)
+                    ?? NavidromeCatalog.Instance.FindSongById(clean);
+                if (song != null) return true;
 
-            lock (CacheLock)
-            {
-                if (SongByPath.TryGetValue(clean, out song) || SongById.TryGetValue(clean, out song))
-                    return true;
-            }
-            if (sourceFileUrl.StartsWith("Navidrome:", StringComparison.OrdinalIgnoreCase) ||
-                sourceFileUrl.StartsWith("subsonic://", StringComparison.OrdinalIgnoreCase))
-            {
+                lock (CacheLock)
+                {
+                    if (SongByPath.TryGetValue(clean, out song) || SongById.TryGetValue(clean, out song))
+                        return true;
+                }
+
                 string id = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(sourceFileUrl, MetaDataType.Custom16) : null;
                 if (!string.IsNullOrEmpty(id))
                 {
@@ -63,7 +64,58 @@ namespace MusicBeePlugin
                     song = new SubsonicSong { Id = id };
                     return true;
                 }
+                return false;
             }
+
+            // Local file resolution (when local library linking is enabled)
+            if (Settings != null && !Settings.LinkLocalLibraryTracks)
+                return false;
+
+            if (LocalLibraryLinker.Instance.TryGetLinkedSong(sourceFileUrl, out song))
+                return true;
+
+            if (Api.Library_GetFileTag != null)
+            {
+                MetaDataType pidField = Settings != null ? Settings.GetPidMetaDataType() : MetaDataType.Custom16;
+                string pid = Api.Library_GetFileTag(sourceFileUrl, pidField);
+                if (string.IsNullOrWhiteSpace(pid) && pidField != MetaDataType.Custom16)
+                    pid = Api.Library_GetFileTag(sourceFileUrl, MetaDataType.Custom16);
+
+                if (!string.IsNullOrWhiteSpace(pid))
+                {
+                    pid = pid.Trim();
+                    song = NavidromeCatalog.Instance.FindSongById(pid);
+                    if (song == null)
+                    {
+                        lock (CacheLock) { SongById.TryGetValue(pid, out song); }
+                    }
+                    if (song != null)
+                    {
+                        LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "pid_tag", persist: true);
+                        return true;
+                    }
+                }
+            }
+
+            if (!NavidromeCatalog.Instance.HasData)
+                return false;
+
+            song = NavidromeCatalog.Instance.FindSongByServerPathSuffix(sourceFileUrl);
+            if (song != null)
+            {
+                LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "path_suffix", persist: true);
+                return true;
+            }
+
+            var info = ReadLocalTrackInfo(sourceFileUrl, Settings != null ? Settings.GetPidMetaDataType() : MetaDataType.Custom16);
+            song = NavidromeCatalog.Instance.FindSongByMetadata(
+                info.Artist, info.AlbumArtist, info.Album, info.DiscNo, info.TrackNo, info.Title, info.DurationSeconds);
+            if (song != null)
+            {
+                LocalLibraryLinker.Instance.UpsertLink(sourceFileUrl, song.Id, "metadata", persist: true);
+                return true;
+            }
+
             return false;
         }
 
@@ -150,12 +202,16 @@ namespace MusicBeePlugin
                 _lastNowPlayingUrl = sourceFileUrl ?? "";
             }
 
+            bool isVirtual = LocalLibraryLinker.IsVirtualNavidromeUrl(sourceFileUrl);
             int targetSize = Settings != null ? Settings.ArtworkSize : 800;
             var ct = ShutdownToken;
             Task.Run(() =>
             {
                 if (ct.IsCancellationRequested) return;
                 Subsonic.Scrobble(song.Id, submission: false);
+
+                if (!isVirtual)
+                    return;
 
                 try
                 {
@@ -186,7 +242,7 @@ namespace MusicBeePlugin
                 if (curIdx >= 0)
                 {
                     string nextUrl = Api.NowPlayingList_GetListFileUrl(curIdx + 1);
-                    if (!string.IsNullOrEmpty(nextUrl) && TryResolveSong(nextUrl, out var nextSong))
+                    if (LocalLibraryLinker.IsVirtualNavidromeUrl(nextUrl) && TryResolveSong(nextUrl, out var nextSong))
                     {
                         LyricsCache.Instance.PrefetchAsync(nextSong, Subsonic);
                         if (Settings != null && Settings.PrefetchNextTrack)
@@ -213,50 +269,6 @@ namespace MusicBeePlugin
             return false;
         }
 
-        private void SyncStarsToMusicBeeLibrary()
-        {
-            if (Api.Library_SetFileTag == null || Api.Library_CommitTagsToFile == null || Api.Library_QueryFilesEx == null)
-                return;
-
-            var ct = ShutdownToken;
-            Task.Run(() =>
-            {
-                try
-                {
-                    if (!Api.Library_QueryFilesEx("Navidrome:", out var libFiles) || libFiles == null || libFiles.Length == 0)
-                        return;
-
-                    foreach (var url in libFiles)
-                    {
-                        if (ct.IsCancellationRequested) return;
-                        if (!TryResolveSong(url, out var s, allowPlaceholder: false)) continue;
-
-                        bool dirty = false;
-                        string currentLove = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(url, MetaDataType.RatingLove) : "";
-                        bool isLovedInLibrary = ParseLoveTag(currentLove);
-                        if (isLovedInLibrary != s.Starred)
-                        {
-                            Api.Library_SetFileTag(url, MetaDataType.RatingLove, s.Starred ? "L" : "");
-                            dirty = true;
-                        }
-
-                        string currentRating = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(url, MetaDataType.Rating) : "";
-                        if (TryParseStarRating(currentRating, out int libStars) && libStars != s.UserRating)
-                        {
-                            Api.Library_SetFileTag(url, MetaDataType.Rating, s.UserRating > 0 ? s.UserRating.ToString(CultureInfo.InvariantCulture) : "");
-                            dirty = true;
-                        }
-
-                        _lastKnownTags[s.Id] = new TrackTagSnapshot { IsLoved = s.Starred, Stars = s.UserRating };
-
-                        if (dirty)
-                            Api.Library_CommitTagsToFile(url);
-                    }
-                }
-                catch { }
-            }, ct);
-        }
-
         private void OnPlayCountersChanged(string sourceFileUrl)
         {
             if (!TryResolveSong(sourceFileUrl, out var song)) return;
@@ -268,8 +280,10 @@ namespace MusicBeePlugin
                 bool playIncreased = current.HasPlayCount && prev.HasPlayCount && current.PlayCount > prev.PlayCount;
                 _playBaselines[song.Id] = current;
 
-                // MusicBee fires PlayCountersChanged on both plays and skips; do not scrobble skips.
+                // Do not scrobble skips or server-pulled playcount updates that did not increment local play count.
                 if (skipIncreased && !playIncreased)
+                    return;
+                if (current.HasPlayCount && prev.HasPlayCount && !playIncreased)
                     return;
             }
             else
@@ -330,6 +344,16 @@ namespace MusicBeePlugin
 
             string loveRaw = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(sourceFileUrl, MetaDataType.RatingLove) : "";
             string ratingRaw = Api.Library_GetFileTag != null ? Api.Library_GetFileTag(sourceFileUrl, MetaDataType.Rating) : "";
+
+            // Virtual storage tracks that are not in the main .mbl library may only expose live edits via NowPlaying_GetFileTag.
+            if (string.IsNullOrEmpty(loveRaw) && string.IsNullOrEmpty(ratingRaw) &&
+                LocalLibraryLinker.IsVirtualNavidromeUrl(sourceFileUrl) &&
+                Api.NowPlaying_GetFileUrl != null && Api.NowPlaying_GetFileTag != null &&
+                string.Equals(Api.NowPlaying_GetFileUrl(), sourceFileUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                loveRaw = Api.NowPlaying_GetFileTag(MetaDataType.RatingLove) ?? "";
+                ratingRaw = Api.NowPlaying_GetFileTag(MetaDataType.Rating) ?? "";
+            }
 
             bool hasPrev = _lastKnownTags.TryGetValue(song.Id, out var prev);
             EvaluateTagSyncDecision(

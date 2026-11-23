@@ -28,6 +28,7 @@ namespace MusicBeePlugin
         public int ServerSongCount { get; set; }
         public string ServerUrl { get; set; } = "";
         public int ArtworkSize { get; set; }
+        public string LastUserStateSyncUtc { get; set; } = "";
     }
 
     public class SubsonicSong
@@ -84,6 +85,7 @@ namespace MusicBeePlugin
         public int Duration { get; set; }
         public int Year { get; set; }
         public string Genre { get; set; } = "";
+        public string Played { get; set; } = "";
     }
 
     public class SubsonicArtist

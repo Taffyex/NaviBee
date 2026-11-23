@@ -30,6 +30,7 @@ namespace MusicBeePlugin
             PersistentCacheRoot = persistentPath;
 
             NavidromeCatalog.Instance.ConfigureStorage(persistentPath);
+            LocalLibraryLinker.Instance.ConfigureStorage(persistentPath);
             ArtworkCache.Instance.ConfigureStorage(persistentPath);
             AudioStreamCache.Instance.ConfigureStorage(persistentPath);
             LyricsCache.Instance.ConfigureStorage(persistentPath);
@@ -49,11 +50,22 @@ namespace MusicBeePlugin
 
             if (Api.MB_RegisterCommand != null)
             {
+                Api.MB_RegisterCommand("Navidrome: Link Local Library Tracks & Sync State", (s, e) => LinkAndSyncLocalLibrary(showDialog: true, pushLocalRatingsOnLink: true));
                 Api.MB_RegisterCommand("Navidrome: Resync Catalog & Artwork", (s, e) => ForceResync());
                 Api.MB_RegisterCommand("Navidrome: Force Cache & Link All Artwork", (s, e) => ForceCacheAndLinkAllArtwork(true));
                 Api.MB_RegisterCommand("Navidrome: Upgrade Cached Artwork to High-Res", (s, e) => UpgradeArtwork());
                 Api.MB_RegisterCommand("Navidrome: Clear Audio & Artwork Cache", (s, e) => ClearAllCache());
                 Api.MB_RegisterCommand("Navidrome: Import All Tracks into Music Library", (s, e) => ImportAllToLibrary());
+            }
+
+            if (Api.MB_AddMenuItem != null)
+            {
+                Api.MB_AddMenuItem("mnuTools/Navidrome: Link Local Library Tracks & Sync State", "Navidrome: Link Local Library", (s, e) => LinkAndSyncLocalLibrary(showDialog: true, pushLocalRatingsOnLink: true));
+                Api.MB_AddMenuItem("mnuTools/Navidrome: Resync Catalog & Artwork", "Navidrome: Resync Catalog", (s, e) => ForceResync());
+                Api.MB_AddMenuItem("mnuTools/Navidrome: Import Missing Tracks into Music Library", "Navidrome: Import Missing Tracks", (s, e) => ImportAllToLibrary());
+                Api.MB_AddMenuItem("mnuTools/Navidrome: Force Cache & Link All Artwork", "Navidrome: Cache & Link Artwork", (s, e) => ForceCacheAndLinkAllArtwork(true));
+                Api.MB_AddMenuItem("mnuTools/Navidrome: Upgrade Cached Artwork to High-Res", "Navidrome: Upgrade Artwork", (s, e) => UpgradeArtwork());
+                Api.MB_AddMenuItem("mnuTools/Navidrome: Clear Audio & Artwork Cache", "Navidrome: Clear Cache", (s, e) => ClearAllCache());
             }
 
             NavidromeCatalog.Instance.LoadFromDisk();
@@ -63,12 +75,12 @@ namespace MusicBeePlugin
                 PluginInfoVersion = MusicBeeApiInfo.PluginInfoVersion,
                 Type = PluginType.Storage,
                 Name = "Navidrome Storage & Sync",
-                Description = "Navidrome & Subsonic cloud library streaming, audio/artwork caching, scrobbling, and safe playlist sync",
+                Description = "Navidrome & Subsonic cloud library streaming, audio/artwork caching, scrobbling, and playlist sync",
                 Author = "TaffyEx",
                 TargetApplication = "Navidrome",
                 VersionMajor = 1,
-                VersionMinor = 0,
-                Revision = 2,
+                VersionMinor = 1,
+                Revision = 0,
                 MinInterfaceVersion = MusicBeeApiInfo.MinInterfaceVersion,
                 MinApiRevision = MusicBeeApiInfo.MinApiRevision,
                 ReceiveNotifications =
@@ -185,6 +197,10 @@ namespace MusicBeePlugin
                 {
                     SetConnectionReady(true);
                     WarmPlaylistLookup();
+                    if (Settings != null && Settings.LinkLocalLibraryTracks)
+                        LinkLocalLibraryInternal(allowEmbedPid: Settings.EmbedNavidromeIdInLocalTag, ct);
+                    if (Settings != null && (Settings.SyncServerStarsToLibrary || Settings.SyncPlayCountsToLibrary))
+                        SyncStateToMusicBeeLibraryCore(pushLocalRatingsToServer: false, ct);
                     Refresh();
                     ForceCacheAndLinkAllArtwork(false);
                     Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Resynced {NavidromeCatalog.Instance.SongCount:N0} tracks.");
@@ -236,56 +252,6 @@ namespace MusicBeePlugin
             LyricsCache.Instance.ClearCache();
             Refresh();
             Api.MB_SetBackgroundTaskMessage?.Invoke("Navidrome: Audio, artwork, and lyrics caches cleared.");
-        }
-
-        private void ImportAllToLibrary()
-        {
-            if (Api.Library_AddFileToLibrary == null) return;
-
-            var ct = ShutdownToken;
-            Task.Run(() =>
-            {
-                var songs = NavidromeCatalog.Instance.GetAllSongs();
-                if (songs.Count == 0)
-                {
-                    ShowUiMessage("Please ensure the Navidrome catalog is synced before importing.",
-                        "Navidrome Import", MessageBoxIcon.Information);
-                    return;
-                }
-
-                int total = songs.Count;
-                int added = 0;
-                int targetSize = Settings?.ArtworkSize ?? 800;
-
-                for (int i = 0; i < total; i++)
-                {
-                    if (ct.IsCancellationRequested) return;
-                    var s = songs[i];
-                    string rel = !string.IsNullOrEmpty(s.CachedRelativePath) ? s.CachedRelativePath : SubsonicUrlHelper.BuildRelativePath(s);
-                    string url = "Navidrome:\\" + rel;
-                    Api.Library_AddFileToLibrary(url, LibraryCategory.Music);
-                    added++;
-
-                    if (MusicBeeArtworkBridge.IsAvailable)
-                    {
-                        string cId = !string.IsNullOrEmpty(s.CanonicalCoverId) ? s.CanonicalCoverId : s.CoverArt;
-                        if (!string.IsNullOrEmpty(cId))
-                        {
-                            string localPath = ArtworkCache.Instance.GetLocalFilePathIfExists(cId, targetSize);
-                            if (localPath != null)
-                                MusicBeeArtworkBridge.AttachArtwork(url, localPath);
-                        }
-                    }
-
-                    if (added % 200 == 0 || added == total)
-                        Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Importing to Music Library ({added} / {total})...");
-                }
-
-                Api.MB_RefreshPanels?.Invoke();
-                ForceCacheAndLinkAllArtwork(false);
-
-                Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: Added {added:N0} tracks to your MusicBee Music library.");
-            }, ct);
         }
 
         public void Uninstall()

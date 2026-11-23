@@ -138,7 +138,8 @@ namespace MusicBeePlugin
                 SongCount = GetInt(dict, "songCount"),
                 Duration = GetInt(dict, "duration"),
                 Year = GetInt(dict, "year"),
-                Genre = GetString(dict, "genre")
+                Genre = GetString(dict, "genre"),
+                Played = GetString(dict, "played")
             };
         }
 

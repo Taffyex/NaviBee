@@ -4,7 +4,7 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag: { description: 'Release tag (e.g. v1.0.1)', required: true, default: 'v1.0.1' }
+      tag: { description: 'Release tag (e.g. v1.1.0)', required: true, default: 'v1.1.0' }
 permissions:
   contents: write
 jobs:
@@ -21,6 +21,14 @@ jobs:
           $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:INPUT_TAG }
           $ver = $tag.TrimStart('v')
           $zip = "release/NaviBee_v$ver.zip"; $dll = "release/mb_NaviBee.dll"
+          $notes = (Get-Content CHANGELOG.md -Raw) -replace "`r`n","`n"
+          $body = if ($notes -match "(?ms)^## $([regex]::Escape($tag))`n(.*?)(?=`n## |\z)") { $Matches[1].Trim() } else { "" }
           gh release view $tag 2>$null
-          if ($LASTEXITCODE -eq 0) { gh release upload $tag $zip $dll --clobber }
-          else { gh release create $tag $zip $dll --title "NaviBee $tag" --generate-notes }
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip $dll --clobber
+            if ($body) { gh release edit $tag --notes $body }
+          } elseif ($body) {
+            gh release create $tag $zip $dll --title "NaviBee $tag" --notes $body
+          } else {
+            gh release create $tag $zip $dll --title "NaviBee $tag" --generate-notes
+          }

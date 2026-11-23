@@ -1,35 +1,31 @@
 # Changelog
 
+## v1.1.0
+- **Local Master Library Linking & PID Embedding**:
+  - Matches local MusicBee library files to Navidrome songs via 3-tier matching: embedded PID (`Custom16`) / persistent `NavidromeCache\local_links.json`, normalized server-relative path suffix (including extension-agnostic `.flac` ↔ `.opus`/`.mp3` stems), and canonical metadata (`AlbumArtist`/`Artist`, `Album`, `Disc`, `Track`, `Title`, `±3s` duration).
+  - Playing, rating, loving, or adding linked local files to playlists now syncs two-way with Navidrome without downloading remote audio streams or overwriting local artwork/lyrics.
+  - Optional **Embed Navidrome ID in local tag (Custom16)** toggle (uncheck for database-only linking without touching audio files on disk).
+- **Full Two-Way PlayCount, LastPlayed, Star & Rating Sync**:
+  - Pulls `PlayCount`, `LastPlayed`, `Starred`, and `UserRating` from Navidrome / Synfonium into both linked local library files and virtual `Navidrome:\` tracks (database-only writes for `PlayCount`/`LastPlayed`, with baseline tracking to prevent double-scrobbling).
+  - Initial **Link Local Library** pass seeds existing local MusicBee stars/ratings up to Navidrome without wiping local ratings with server `0`.
+  - Removed the 30-album user-state refresh cap so every play and rating made on mobile clients (Synfonium, etc.) is pulled even when Navidrome's folder scan timestamp has not changed.
+- **Deduplicated Import & Tools Menu**:
+  - Registered all Navidrome commands directly under MusicBee's **Tools** menu (alongside hotkey commands), including **Tools > Navidrome: Link Local Library Tracks & Sync State** and **Tools > Navidrome: Import Missing Tracks into Music Library**.
+  - Importing now links existing local library files first and skips tracks already present locally or already imported instead of creating duplicates.
+- **Virtual Storage View & Settings Polish**:
+  - Immediately refreshes `CachedTags` on star/rating/playcount updates and adds a `NowPlaying_GetFileTag` fallback for virtual storage view edits.
+  - Added **Link local library tracks**, **Embed Navidrome ID in local tag (Custom16)**, live linked-track count, and a one-click **Link Local Library** button in Settings.
+
 ## v1.0.2
-- **Fixed startup "File not found"**: registers the `Navidrome:\` storage device synchronously on `PluginStartup` whenever a cached catalog is present, and falls back to offline cache playback if the server is unreachable instead of unmounting the provider.
-- **Safe, opt-in playlist sync**:
-  - Pushing MusicBee playlist changes to Navidrome is now **opt-in (off by default)** via Settings.
-  - Deleting a playlist in MusicBee **never deletes** the server playlist (it only unlinks the local copy).
-  - Never sends empty track lists to the server and never overwrites unlinked same-name server playlists (creates a `<name> (MusicBee)` copy instead).
-  - Skips server playlists owned by other Navidrome users, coalesces rapid edits with a 1.5 s debounce, and saves verified JSON backups under `NavidromeCache\PlaylistBackups\` (keeping the last 20 per playlist) before every update — aborting the push if backup fails.
-  - Explicit server playlist deletion from the Navidrome node now asks for confirmation and saves a backup first.
-- **Fixed tag/rating/star & scrobble sync bugs**:
-  - Editing track tags (e.g. Title) can no longer wipe server stars or ratings with blank MusicBee fields.
-  - Skipped tracks are no longer scrobbled as plays (filters MusicBee's `PlayCountersChanged` skip events).
-  - Startup cache hits now refresh server stars, ratings, and recent play counts (`getStarred2` + recent/highest albums) so changes from mobile/web clients appear automatically.
-  - Star/rating updates refresh `All Albums` immediately and coalesce `catalog.json` writes on a 3-second debounce timer.
-- **Transcoded stream seeking**: appends `estimateContentLength=true` to transcoded `stream` URLs so MusicBee can seek inside transcoded tracks.
-- **Richer track metadata**: exposes `PlayCount`, `LastPlayed`, `DateAdded`, `SampleRate`, `Channels`, and `Comment` from Subsonic/OpenSubsonic.
-- **Settings & UX polish**:
-  - Auto-normalizes server URLs (adds `https://` or `http://`, strips trailing `/rest`), adds a **Show password** toggle, displays server type/version and track count on **Test Connection**, maps Subsonic/HTTP errors to plain messages, asks confirmation before **Clear**, formats cache sizes in GB, shows playlist backup counts with an **Open backups folder** link, centers on MusicBee, and shows `"Artist – Title"` in scrobble notifications.
-  - Cancels background work cleanly on MusicBee shutdown and removes `NavidromeCache\` on uninstall.
+- **Fixed startup "File not found"**: registers `Navidrome:\` synchronously on `PluginStartup` whenever a cached catalog is present, with offline cache playback fallback.
+- **Safe, opt-in playlist sync**: opt-in push, never deletes server playlists, never sends empty playlists, avoids name collisions, skips other users' playlists, 1.5 s debounce, and verified JSON backups (`NavidromeCache\PlaylistBackups\`).
+- **Fixed tag/rating/star & scrobble sync bugs**: prevents blank-field wipes on tag edits, filters skip events from scrobbling, refreshes user state on startup cache hits, and debounces `catalog.json` saves.
+- **Transcoded stream seeking & richer metadata**: `estimateContentLength=true`, `PlayCount`, `LastPlayed`, `DateAdded`, `SampleRate`, `Channels`, and `Comment`.
+- **Settings & UX polish**: auto-normalized URLs, password toggle, server info on Test Connection, clean shutdown cancellation, and cache cleanup on uninstall.
 
 ## v1.0.1
-- Added OpenSubsonic `getLyricsBySongId` and legacy `getLyrics` support with time-synced `[MM:SS.ff]` LRC formatting and plain-text fallback.
-- Added persistent local lyrics caching (`NavidromeCache/Lyrics/*.lrc` & `*.txt`), next-track lyrics prefetching, and stats/clearing in Settings.
-- Added safe in-memory lyrics injection into MusicBee's track cache and active Lyrics panel without triggering `FolderFile` disk tag-write errors.
-- Added automated GitHub Release workflow so release ZIP and DLL download links resolve cleanly.
+- Added OpenSubsonic `getLyricsBySongId` and legacy `getLyrics` support with time-synced `[MM:SS.ff]` LRC formatting, disk caching, prefetching, and safe in-memory Lyrics panel injection.
+- Added automated GitHub Release workflow.
 
 ## v1.0.0
 - Initial public release of NaviBee (`mb_NaviBee.dll`).
-- Native MusicBee `PluginType.Storage` provider for Navidrome and Subsonic / OpenSubsonic servers.
-- Persistent `catalog.json` index with `getScanStatus` delta checks and paginated `search3` sync.
-- HTTP `Range`-seekable `ConnectStream` with single-pass stream-to-cache capture, transcoding bitrate cache keys, LRU disk quota enforcement, and next-track queue prefetching.
-- Multi-threaded album artwork pre-warming and disk cache (`Original`, `1200`, `800`, `300 px`).
-- Two-way sync: Now Playing, scrobbles, track stars (`star` / `unstar`), 1-5 star ratings (`setRating`), and playlist create/update/delete synchronization.
-- DPAPI-encrypted password storage and portable-aware persistent cache paths.

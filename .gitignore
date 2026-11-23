@@ -1,4 +1,3 @@
-## Visual Studio & .NET Build Artifacts
 **/bin/
 **/obj/
 .vs/
@@ -6,15 +5,9 @@
 *.suo
 *.userosscache
 *.sln.docstates
-
-## OS / Temp
 Thumbs.db
-ehthumbs.db
 Desktop.ini
-$RECYCLE.BIN/
 *.tmp
 *~
-
-## Keep precompiled release artifacts
 !release/
 !release/**

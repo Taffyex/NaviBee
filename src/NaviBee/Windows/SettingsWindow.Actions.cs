@@ -64,8 +64,12 @@ namespace MusicBeePlugin
             }
 
             _chkPrefetch.Checked = _settings.PrefetchNextTrack;
-            _chkSyncStars.Checked = _settings.SyncServerStarsToLibrary;
+            _chkLinkLocal.Checked = _settings.LinkLocalLibraryTracks;
+            _chkEmbedLocalPid.Checked = _settings.EmbedNavidromeIdInLocalTag;
+            _chkEmbedLocalPid.Enabled = _chkLinkLocal.Checked;
+            _chkSyncStars.Checked = _settings.SyncServerStarsToLibrary || _settings.SyncPlayCountsToLibrary;
             _chkPushPlaylists.Checked = _settings.PushPlaylistsToServer;
+
 
             if (string.IsNullOrWhiteSpace(_txtServerUrl.Text))
             {
@@ -110,8 +114,12 @@ namespace MusicBeePlugin
             }
 
             _settings.PrefetchNextTrack = _chkPrefetch.Checked;
+            _settings.LinkLocalLibraryTracks = _chkLinkLocal.Checked;
+            _settings.EmbedNavidromeIdInLocalTag = _chkEmbedLocalPid.Checked;
             _settings.SyncServerStarsToLibrary = _chkSyncStars.Checked;
+            _settings.SyncPlayCountsToLibrary = _chkSyncStars.Checked;
             _settings.PushPlaylistsToServer = _chkPushPlaylists.Checked;
+
 
             _onSave?.Invoke(_settings);
             Close();
@@ -123,8 +131,9 @@ namespace MusicBeePlugin
             AudioStreamCache.Instance.GetCacheStats(out int audioCount, out long audioBytes);
             LyricsCache.Instance.GetCacheStats(out int lyricsCount, out _);
             PlaylistBackup.Instance.GetBackupStats(out int backupCount, out long backupBytes);
+            int linkedCount = LocalLibraryLinker.Instance.LinkCount;
 
-            string cacheText = $"Cache: {artCount} art ({FriendlyErrors.FormatBytes(artBytes)}) | {audioCount} audio ({FriendlyErrors.FormatBytes(audioBytes)}) | {lyricsCount} lyrics";
+            string cacheText = $"Cache: {artCount} art ({FriendlyErrors.FormatBytes(artBytes)}) | {audioCount} audio ({FriendlyErrors.FormatBytes(audioBytes)}) | {lyricsCount} lyrics | {linkedCount:N0} linked";
             string backupText = backupCount > 0
                 ? $"Playlist backups: {backupCount} {(backupCount == 1 ? "file" : "files")} ({FriendlyErrors.FormatBytes(backupBytes)})"
                 : "Playlist backups: none yet";
@@ -158,6 +167,39 @@ namespace MusicBeePlugin
                 _lblStatus.ForeColor = Color.DarkRed;
                 _lblStatus.Text = $"Could not open backups folder: {ex.Message}";
             }
+        }
+
+        private void LinkLocalLibraryNow()
+        {
+            if (Plugin.Instance == null)
+            {
+                _lblStatus.ForeColor = Color.DarkOrange;
+                _lblStatus.Text = "Plugin host is not active. Save settings and run from MusicBee Tools menu.";
+                return;
+            }
+
+            _settings.LinkLocalLibraryTracks = _chkLinkLocal.Checked;
+            _settings.EmbedNavidromeIdInLocalTag = _chkEmbedLocalPid.Checked;
+            _settings.SyncServerStarsToLibrary = _chkSyncStars.Checked;
+            _settings.SyncPlayCountsToLibrary = _chkSyncStars.Checked;
+
+            _btnLinkLocal.Enabled = false;
+            _lblStatus.ForeColor = Color.Black;
+            _lblStatus.Text = "Linking local library tracks to Navidrome...";
+
+            Plugin.Instance.LinkAndSyncLocalLibrary(
+                showDialog: false,
+                pushLocalRatingsOnLink: true,
+                statusCallback: msg => SafeUi(() =>
+                {
+                    _lblStatus.ForeColor = msg.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ? Color.DarkRed : Color.DarkGreen;
+                    _lblStatus.Text = msg;
+                }),
+                onComplete: () => SafeUi(() =>
+                {
+                    _btnLinkLocal.Enabled = true;
+                    RefreshStats();
+                }));
         }
 
         private void UpgradeArtwork()

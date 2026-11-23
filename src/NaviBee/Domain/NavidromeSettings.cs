@@ -10,6 +10,7 @@ namespace MusicBeePlugin
     {
         internal const string DefaultServerUrl = "";
 
+
         public string ServerUrl { get; set; } = DefaultServerUrl;
         public string Username { get; set; } = "";
         public string EncryptedPassword { get; set; } = "";
@@ -21,6 +22,34 @@ namespace MusicBeePlugin
         public bool PrefetchNextTrack { get; set; } = true;
         public bool SyncServerStarsToLibrary { get; set; } = true;
         public bool PushPlaylistsToServer { get; set; } = false;
+        public bool LinkLocalLibraryTracks { get; set; } = true;
+        public bool EmbedNavidromeIdInLocalTag { get; set; } = true;
+        public string LocalIdTagField { get; set; } = "Custom16"; // "Custom16" or "DatabaseOnly"
+        public bool SyncPlayCountsToLibrary { get; set; } = true;
+        public bool SkipDuplicatesOnImport { get; set; } = true;
+
+        public bool TryGetPidMetaDataType(out MetaDataType field)
+        {
+            field = MetaDataType.Custom16;
+            if (!EmbedNavidromeIdInLocalTag)
+                return false;
+
+            string raw = (LocalIdTagField ?? "Custom16").Trim();
+            if (string.IsNullOrEmpty(raw) || string.Equals(raw, "DatabaseOnly", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (Enum.TryParse<MetaDataType>(raw, ignoreCase: true, out var parsed))
+            {
+                field = parsed;
+                return true;
+            }
+            return true;
+        }
+
+        public MetaDataType GetPidMetaDataType()
+        {
+            return TryGetPidMetaDataType(out var field) ? field : MetaDataType.Custom16;
+        }
 
         [ScriptIgnore]
         public string PlainPassword

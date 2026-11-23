@@ -19,11 +19,14 @@ namespace MusicBeePlugin
         private ComboBox _cmbArtworkSize;
         private ComboBox _cmbAudioCache;
         private CheckBox _chkPrefetch;
+        private CheckBox _chkLinkLocal;
+        private CheckBox _chkEmbedLocalPid;
         private CheckBox _chkSyncStars;
         private CheckBox _chkPushPlaylists;
         private Label _lblCacheStats;
         private Label _lblBackupStats;
         private LinkLabel _lnkOpenBackups;
+        private Button _btnLinkLocal;
         private Button _btnForceLink;
         private Button _btnUpgradeArtwork;
         private Button _btnClearCache;
@@ -147,7 +150,22 @@ namespace MusicBeePlugin
             Controls.Add(_chkPrefetch);
             y += 24;
 
-            _chkSyncStars = new CheckBox { Text = "Sync Navidrome stars && ratings to local MusicBee library", Location = new Point(ctrlX, y), Size = new Size(ctrlW, 22) };
+            _chkLinkLocal = new CheckBox { Text = "Link local library tracks (2-way playcount && rating sync)", Location = new Point(ctrlX, y), Size = new Size(ctrlW, 22) };
+            _chkLinkLocal.CheckedChanged += (s, e) => _chkEmbedLocalPid.Enabled = _chkLinkLocal.Checked;
+            _toolTip.SetToolTip(_chkLinkLocal,
+                "Matches local MusicBee files to Navidrome tracks so playing, rating,\n" +
+                "loving, or adding local files to playlists syncs two-way with Navidrome.");
+            Controls.Add(_chkLinkLocal);
+            y += 24;
+
+            _chkEmbedLocalPid = new CheckBox { Text = "Embed Navidrome ID in local tag (Custom16)", Location = new Point(ctrlX + 18, y), Size = new Size(ctrlW - 18, 22) };
+            _toolTip.SetToolTip(_chkEmbedLocalPid,
+                "Writes the Navidrome song ID into Custom16 on matched local files for instant O(1) lookup.\n" +
+                "Uncheck to store links only in NavidromeCache\\local_links.json without modifying audio files.");
+            Controls.Add(_chkEmbedLocalPid);
+            y += 24;
+
+            _chkSyncStars = new CheckBox { Text = "Sync Navidrome stars, ratings && playcounts to library", Location = new Point(ctrlX, y), Size = new Size(ctrlW, 22) };
             Controls.Add(_chkSyncStars);
             y += 24;
 
@@ -169,20 +187,26 @@ namespace MusicBeePlugin
             _lnkOpenBackups = new LinkLabel { Text = "Open backups folder", Location = new Point(360, y), Size = new Size(160, 20), TextAlign = ContentAlignment.MiddleRight };
             _lnkOpenBackups.LinkClicked += (s, e) => OpenBackupsFolder();
             Controls.Add(_lnkOpenBackups);
-            y += 24;
+            y += 26;
 
-            _btnForceLink = new Button { Text = "Cache && Link Art", Location = new Point(ctrlX, y), Size = new Size(140, 26) };
+            _btnLinkLocal = new Button { Text = "Link Local Library", Location = new Point(14, y), Size = new Size(132, 26) };
+            _btnLinkLocal.Click += (s, e) => LinkLocalLibraryNow();
+            _toolTip.SetToolTip(_btnLinkLocal, "Match local MusicBee library tracks to Navidrome and run a 2-way star, rating & playcount sync now.");
+            Controls.Add(_btnLinkLocal);
+
+            _btnForceLink = new Button { Text = "Cache && Link Art", Location = new Point(154, y), Size = new Size(132, 26) };
             _btnForceLink.Click += (s, e) => Plugin.Instance?.ForceCacheAndLinkAllArtwork(true);
             Controls.Add(_btnForceLink);
 
-            _btnUpgradeArtwork = new Button { Text = "Re-Cache High-Res", Location = new Point(ctrlX + 146, y), Size = new Size(140, 26) };
+            _btnUpgradeArtwork = new Button { Text = "Re-Cache High-Res", Location = new Point(294, y), Size = new Size(138, 26) };
             _btnUpgradeArtwork.Click += (s, e) => UpgradeArtwork();
             Controls.Add(_btnUpgradeArtwork);
 
-            _btnClearCache = new Button { Text = "Clear", Location = new Point(ctrlX + 292, y), Size = new Size(70, 26) };
+            _btnClearCache = new Button { Text = "Clear Cache", Location = new Point(440, y), Size = new Size(80, 26) };
             _btnClearCache.Click += (s, e) => ClearCaches();
             Controls.Add(_btnClearCache);
             y += rowH + 6;
+
 
             _lblStatus = new Label { Location = new Point(14, y), Size = new Size(506, 36), Text = "", TextAlign = ContentAlignment.MiddleLeft };
             Controls.Add(_lblStatus);

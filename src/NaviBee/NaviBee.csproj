@@ -12,20 +12,18 @@
     <RootNamespace>MusicBeePlugin</RootNamespace>
     <Authors>TaffyEx</Authors>
     <Product>NaviBee</Product>
-    <Version>1.0.2</Version>
+    <Version>1.1.0</Version>
     <OutputPath>bin\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
-
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <Optimize>true</Optimize>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
-
   <ItemGroup>
     <Compile Include="Domain\NavidromeSettings.cs" />
     <Compile Include="Domain\ConnectStream.cs" />
@@ -41,6 +39,7 @@
     <Compile Include="Services\NavidromeCatalog.cs" />
     <Compile Include="Services\NavidromeCatalog.Index.cs" />
     <Compile Include="Services\NavidromeCatalog.Starred.cs" />
+    <Compile Include="Services\LocalLibraryLinker.cs" />
     <Compile Include="Services\PlaylistLinkStore.cs" />
     <Compile Include="Services\PlaylistBackup.cs" />
     <Compile Include="Services\MusicBeeArtworkBridge.cs" />
@@ -53,11 +52,11 @@
     <Compile Include="Plugin.Storage.cs" />
     <Compile Include="Plugin.Storage.Stream.cs" />
     <Compile Include="Plugin.Sync.cs" />
+    <Compile Include="Plugin.LocalSync.cs" />
     <Compile Include="Plugin.Playlists.cs" />
     <Compile Include="Plugin.Artwork.cs" />
     <Compile Include="MusicBeeInterface.cs" />
   </ItemGroup>
-
   <ItemGroup>
     <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Security" />
