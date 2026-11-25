@@ -50,7 +50,7 @@ namespace MusicBeePlugin
         internal static void ConfigureRequest(HttpWebRequest req)
         {
             if (req == null) return;
-            req.UserAgent = "NaviBee/1.1.0";
+            req.UserAgent = "NaviBee/1.2.1";
             try
             {
                 var sp = ServicePointManager.FindServicePoint(req.RequestUri);

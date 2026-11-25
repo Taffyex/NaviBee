@@ -69,108 +69,117 @@ namespace MusicBeePlugin
             CancellationToken ct = ShutdownToken;
             Task.Run(() =>
             {
-                if (ct.IsCancellationRequested) return;
-
-                var ping = Subsonic.PingWithInfo();
-                if (ct.IsCancellationRequested) return;
-
-                SetConnectionReady(ping.Ok);
-                if (!ping.Ok)
+                try
                 {
-                    string reason = FriendlyErrors.FormatException(Subsonic.LastError);
-                    if (NavidromeCatalog.Instance.HasData)
+                    if (ct.IsCancellationRequested) return;
+
+                    var ping = Subsonic.PingWithInfo();
+                    if (ct.IsCancellationRequested) return;
+
+                    SetConnectionReady(ping.Ok);
+                    if (!ping.Ok)
                     {
-                        if (!_storageReadySent)
+                        string reason = FriendlyErrors.FormatException(Subsonic.LastError);
+                        if (NavidromeCatalog.Instance.HasData)
                         {
-                            _storageReadySent = true;
-                            Api.MB_SendNotification?.Invoke(CallbackType.StorageReady);
+                            if (!_storageReadySent)
+                            {
+                                _storageReadySent = true;
+                                Api.MB_SendNotification?.Invoke(CallbackType.StorageReady);
+                            }
+                            Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome offline ({reason}): playing from cache.");
                         }
-                        Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome offline ({reason}): playing from cache.");
+                        else
+                        {
+                            Api.MB_SendNotification?.Invoke(CallbackType.StorageFailed);
+                            Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: {reason}");
+                        }
+                        return;
+                    }
+
+                    if (!_storageReadySent || isInitialConfigure)
+                    {
+                        _storageReadySent = true;
+                        Api.MB_SendNotification?.Invoke(CallbackType.StorageReady);
+                    }
+
+                    string ver = !string.IsNullOrWhiteSpace(ping.ServerVersion) ? $" ({ping.ServerVersion})" : "";
+                    Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome connected{ver}: ready for streaming & sync.");
+                    WarmPlaylistLookup();
+                    if (ct.IsCancellationRequested) return;
+
+                    bool serverChanged = NavidromeCatalog.Instance.IsServerChanged(Subsonic);
+                    if (serverChanged)
+                    {
+                        ResetSyncTracking();
+                        PendingSyncQueue.Instance.Clear();
+                        LocalLibraryLinker.Instance.Clear(persist: true);
+                        PlaylistLinkStore.Instance.Clear();
+                        ArtworkCache.Instance.ClearDiskCache();
+                        AudioStreamCache.Instance.ClearCache();
+                        LyricsCache.Instance.ClearCache();
                     }
                     else
                     {
-                        Api.MB_SendNotification?.Invoke(CallbackType.StorageFailed);
-                        Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome: {reason}");
+                        PendingSyncQueue.Instance.FlushPending(Subsonic, ct);
                     }
-                    return;
-                }
 
-                if (!_storageReadySent || isInitialConfigure)
+                    bool forceFull = !NavidromeCatalog.Instance.HasData || serverChanged;
+                    bool catalogChanged = false;
+                    bool synced = forceFull
+                        ? (catalogChanged = NavidromeCatalog.Instance.SyncFromServer(
+                            Subsonic,
+                            msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg),
+                            null,
+                            Settings.ArtworkSize,
+                            ct,
+                            startPrewarm: false))
+                        : NavidromeCatalog.Instance.SmartSyncIfNeeded(
+                            Subsonic,
+                            Settings.ArtworkSize,
+                            msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg),
+                            out catalogChanged,
+                            ct,
+                            startPrewarm: !isInitialConfigure);
+
+                    if (ct.IsCancellationRequested) return;
+
+                    if (!forceFull && synced && !catalogChanged)
+                    {
+                        if (NavidromeCatalog.Instance.RefreshUserState(Subsonic, ct))
+                            catalogChanged = true;
+                    }
+
+                    if (ct.IsCancellationRequested) return;
+
+                    int newlyLinked = 0;
+                    if (Settings.LinkLocalLibraryTracks && NavidromeCatalog.Instance.HasData)
+                    {
+                        var linkRes = LinkLocalLibraryInternal(allowEmbedPid: Settings.EmbedNavidromeIdInLocalTag, ct);
+                        newlyLinked = linkRes.NewlyLinked;
+                    }
+
+                    if (ct.IsCancellationRequested) return;
+
+                    bool shouldSyncState = (catalogChanged || isInitialConfigure || newlyLinked > 0) &&
+                                           (Settings.SyncServerStarsToLibrary || Settings.SyncPlayCountsToLibrary);
+                    if (shouldSyncState)
+                        SyncStateToMusicBeeLibrary(pushLocalRatingsToServer: isInitialConfigure);
+
+                    if (isInitialConfigure)
+                        Refresh();
+
+                    if (synced && (catalogChanged || isInitialConfigure))
+                        ForceCacheAndLinkAllArtwork(false);
+                    else
+                        Api.MB_RefreshPanels?.Invoke();
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
                 {
-                    _storageReadySent = true;
-                    Api.MB_SendNotification?.Invoke(CallbackType.StorageReady);
+                    if (!ct.IsCancellationRequested)
+                        Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome startup sync error: {FriendlyErrors.FormatException(ex)}");
                 }
-
-                string ver = !string.IsNullOrWhiteSpace(ping.ServerVersion) ? $" ({ping.ServerVersion})" : "";
-                Api.MB_SetBackgroundTaskMessage?.Invoke($"Navidrome connected{ver}: ready for streaming & sync.");
-                WarmPlaylistLookup();
-                if (ct.IsCancellationRequested) return;
-
-                bool serverChanged = NavidromeCatalog.Instance.IsServerChanged(Subsonic);
-                if (serverChanged)
-                {
-                    ResetSyncTracking();
-                    PendingSyncQueue.Instance.Clear();
-                    LocalLibraryLinker.Instance.Clear(persist: true);
-                    PlaylistLinkStore.Instance.Clear();
-                    ArtworkCache.Instance.ClearDiskCache();
-                    AudioStreamCache.Instance.ClearCache();
-                    LyricsCache.Instance.ClearCache();
-                }
-                else
-                {
-                    PendingSyncQueue.Instance.FlushPending(Subsonic, ct);
-                }
-
-                bool forceFull = !NavidromeCatalog.Instance.HasData || serverChanged;
-                bool catalogChanged = false;
-                bool synced = forceFull
-                    ? (catalogChanged = NavidromeCatalog.Instance.SyncFromServer(
-                        Subsonic,
-                        msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg),
-                        null,
-                        Settings.ArtworkSize,
-                        ct,
-                        startPrewarm: false))
-                    : NavidromeCatalog.Instance.SmartSyncIfNeeded(
-                        Subsonic,
-                        Settings.ArtworkSize,
-                        msg => Api.MB_SetBackgroundTaskMessage?.Invoke(msg),
-                        out catalogChanged,
-                        ct,
-                        startPrewarm: !isInitialConfigure);
-
-                if (ct.IsCancellationRequested) return;
-
-                if (!forceFull && synced && !catalogChanged)
-                {
-                    if (NavidromeCatalog.Instance.RefreshUserState(Subsonic, ct))
-                        catalogChanged = true;
-                }
-
-                if (ct.IsCancellationRequested) return;
-
-                int newlyLinked = 0;
-                if (Settings.LinkLocalLibraryTracks && NavidromeCatalog.Instance.HasData)
-                {
-                    var linkRes = LinkLocalLibraryInternal(allowEmbedPid: Settings.EmbedNavidromeIdInLocalTag, ct);
-                    newlyLinked = linkRes.NewlyLinked;
-                }
-
-                if (ct.IsCancellationRequested) return;
-
-                bool shouldSyncState = (catalogChanged || isInitialConfigure || newlyLinked > 0) &&
-                                       (Settings.SyncServerStarsToLibrary || Settings.SyncPlayCountsToLibrary);
-                if (shouldSyncState)
-                    SyncStateToMusicBeeLibrary(pushLocalRatingsToServer: isInitialConfigure);
-
-                if (isInitialConfigure)
-                    Refresh();
-
-                if (synced && (catalogChanged || isInitialConfigure))
-                    ForceCacheAndLinkAllArtwork(false);
-                else
-                    Api.MB_RefreshPanels?.Invoke();
             }, ct);
         }
 
@@ -309,6 +318,16 @@ namespace MusicBeePlugin
                         ? $"Navidrome: Imported {added:N0} missing tracks (skipped {skippedLocal:N0} linked local, {skippedExisting:N0} already imported{failedNote})."
                         : $"Navidrome: No missing tracks to import ({skippedLocal:N0} already linked to local library, {skippedExisting:N0} already imported{failedNote}).";
                     Api.MB_SetBackgroundTaskMessage?.Invoke(summary);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    if (!ct.IsCancellationRequested)
+                    {
+                        string err = $"Navidrome import error: {FriendlyErrors.FormatException(ex)}";
+                        Api.MB_SetBackgroundTaskMessage?.Invoke(err);
+                        ShowUiMessage(err, "Navidrome Import", MessageBoxIcon.Warning);
+                    }
                 }
                 finally
                 {

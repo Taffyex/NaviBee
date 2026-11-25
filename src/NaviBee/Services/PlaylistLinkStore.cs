@@ -191,7 +191,7 @@ namespace MusicBeePlugin
         {
             string newKey = NormalizePath(newPath);
             if (string.IsNullOrEmpty(newKey)) return false;
-            string newName = Path.GetFileNameWithoutExtension(newKey);
+            string newName = SubsonicUrlHelper.GetFileNameWithoutExtensionSafe(newKey);
             if (string.IsNullOrEmpty(newName)) return false;
 
             lock (_lock)
@@ -204,7 +204,7 @@ namespace MusicBeePlugin
                 foreach (var kv in _byPath)
                 {
                     if (File.Exists(kv.Key)) continue;
-                    string oldName = Path.GetFileNameWithoutExtension(kv.Key);
+                    string oldName = SubsonicUrlHelper.GetFileNameWithoutExtensionSafe(kv.Key);
                     if (string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(kv.Value.ServerName, newName, StringComparison.OrdinalIgnoreCase))
                     {

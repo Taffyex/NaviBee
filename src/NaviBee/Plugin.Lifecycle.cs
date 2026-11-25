@@ -87,7 +87,7 @@ namespace MusicBeePlugin
                 TargetApplication = "Navidrome",
                 VersionMajor = 1,
                 VersionMinor = 2,
-                Revision = 0,
+                Revision = 1,
                 MinInterfaceVersion = MusicBeeApiInfo.MinInterfaceVersion,
                 MinApiRevision = MusicBeeApiInfo.MinApiRevision,
                 ReceiveNotifications =
@@ -233,6 +233,16 @@ namespace MusicBeePlugin
                     {
                         string reason = FriendlyErrors.FormatException(Subsonic?.LastError);
                         ShowUiMessage($"Could not resync catalog: {reason}", "Navidrome Resync", MessageBoxIcon.Warning);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    if (!ct.IsCancellationRequested)
+                    {
+                        string err = $"Navidrome resync error: {FriendlyErrors.FormatException(ex)}";
+                        Api.MB_SetBackgroundTaskMessage?.Invoke(err);
+                        ShowUiMessage(err, "Navidrome Resync", MessageBoxIcon.Warning);
                     }
                 }
                 finally

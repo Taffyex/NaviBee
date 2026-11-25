@@ -96,11 +96,12 @@ namespace MusicBeePlugin
             }
         }
 
+        private static readonly char[] InvalidFileNameChars = Path.GetInvalidFileNameChars();
+
         private static string GetSafeId(string songId)
         {
             if (string.IsNullOrEmpty(songId)) return "unknown";
-            char[] invalid = Path.GetInvalidFileNameChars();
-            if (songId.IndexOfAny(invalid) >= 0 || songId.Length > 60)
+            if (songId.IndexOfAny(InvalidFileNameChars) >= 0 || songId.Length > 60)
             {
                 using (var md5 = MD5.Create())
                 {
@@ -118,7 +119,7 @@ namespace MusicBeePlugin
             if (transcodeBitrate > 0)
                 return Path.Combine(_cacheDir, $"{safeId}.br{transcodeBitrate}.mp3");
 
-            string ext = !string.IsNullOrEmpty(song.Suffix) ? SubsonicUrlHelper.Sanitize(song.Suffix.TrimStart('.')) : "mp3";
+            string ext = SubsonicUrlHelper.SanitizeExtension(song.Suffix);
             return Path.Combine(_cacheDir, $"{safeId}.{ext}");
         }
 

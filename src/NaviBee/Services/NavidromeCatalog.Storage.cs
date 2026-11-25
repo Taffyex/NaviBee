@@ -178,16 +178,20 @@ namespace MusicBeePlugin
                 {
                     writer.WriteLine("[");
                     int count = snapshot != null ? snapshot.Count : 0;
+                    bool wroteAny = false;
                     for (int i = 0; i < count; i++)
                     {
                         var s = snapshot[i];
                         if (s == null) continue;
+                        if (wroteAny)
+                            writer.WriteLine(",");
                         sb.Clear();
                         AppendCompactSongJson(sb, s);
-                        if (i < count - 1)
-                            sb.Append(',');
-                        writer.WriteLine(sb.ToString());
+                        writer.Write(sb.ToString());
+                        wroteAny = true;
                     }
+                    if (wroteAny)
+                        writer.WriteLine();
                     writer.WriteLine("]");
                 }
 
@@ -265,7 +269,15 @@ namespace MusicBeePlugin
                     default:
                         if (c < 0x20)
                             sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
-                        else
+                        else if (char.IsHighSurrogate(c))
+                        {
+                            if (i + 1 < val.Length && char.IsLowSurrogate(val[i + 1]))
+                            {
+                                sb.Append(c);
+                                sb.Append(val[++i]);
+                            }
+                        }
+                        else if (!char.IsLowSurrogate(c))
                             sb.Append(c);
                         break;
                 }

@@ -198,7 +198,7 @@ namespace MusicBeePlugin
             Task.Run(() =>
             {
                 if (ct.IsCancellationRequested) return;
-                Subsonic.Scrobble(song.Id, submission: false);
+                Subsonic?.Scrobble(song.Id, submission: false);
 
                 if (!isVirtual)
                     return;

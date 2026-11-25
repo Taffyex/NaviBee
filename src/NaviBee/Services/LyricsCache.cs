@@ -70,11 +70,12 @@ namespace MusicBeePlugin
             _memCache[songId] = value;
         }
 
+        private static readonly char[] InvalidFileNameChars = Path.GetInvalidFileNameChars();
+
         private static string GetSafeKey(string songId)
         {
             if (string.IsNullOrEmpty(songId)) return "unknown";
-            char[] invalid = Path.GetInvalidFileNameChars();
-            if (songId.IndexOfAny(invalid) >= 0 || songId.Length > 60)
+            if (songId.IndexOfAny(InvalidFileNameChars) >= 0 || songId.Length > 60)
             {
                 using (var md5 = MD5.Create())
                 {

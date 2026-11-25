@@ -139,7 +139,7 @@ namespace MusicBeePlugin
                 if (_byPath.TryGetValue(normalized, out var s)) return s;
                 string clean = normalized.TrimStart('\\');
                 if (_byPath.TryGetValue(clean, out s)) return s;
-                string fname = Path.GetFileName(normalized);
+                string fname = SubsonicUrlHelper.GetFileNameSafe(normalized);
                 if (!string.IsNullOrEmpty(fname) && _byUniqueFileName.TryGetValue(fname, out s) && s != null) return s;
                 return null;
             }

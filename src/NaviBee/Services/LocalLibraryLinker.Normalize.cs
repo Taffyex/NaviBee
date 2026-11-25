@@ -76,6 +76,42 @@ namespace MusicBeePlugin
             ExtractPathSuffixes(rawPath, out suf3, out suf2, out stem3, out stem2, out _, out _);
         }
 
+        internal static string SafeNormalizeFormKC(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return input ?? "";
+            bool hasSurrogate = false;
+            for (int i = 0; i < input.Length; i++)
+            {
+                if (char.IsSurrogate(input[i])) { hasSurrogate = true; break; }
+            }
+
+            string cleaned = input;
+            if (hasSurrogate)
+            {
+                var sb = new StringBuilder(input.Length);
+                for (int i = 0; i < input.Length; i++)
+                {
+                    char c = input[i];
+                    if (char.IsHighSurrogate(c))
+                    {
+                        if (i + 1 < input.Length && char.IsLowSurrogate(input[i + 1]))
+                        {
+                            sb.Append(c);
+                            sb.Append(input[++i]);
+                        }
+                    }
+                    else if (!char.IsLowSurrogate(c))
+                    {
+                        sb.Append(c);
+                    }
+                }
+                cleaned = sb.ToString();
+            }
+
+            try { return cleaned.Normalize(NormalizationForm.FormKC); }
+            catch (ArgumentException) { return cleaned; }
+        }
+
         internal static void ExtractPathSuffixes(
             string rawPath,
             out string suf3,
@@ -88,13 +124,12 @@ namespace MusicBeePlugin
             suf3 = suf2 = stem3 = stem2 = discCollapsed = discCollapsedStem = null;
             if (string.IsNullOrWhiteSpace(rawPath) || IsCueSubTrackUrl(rawPath)) return;
 
-            string normalized = rawPath.Trim().Normalize(NormalizationForm.FormKC).Replace('/', '\\');
+            string normalized = SafeNormalizeFormKC(rawPath.Trim()).Replace('/', '\\');
             string[] parts = normalized.Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 2) return;
 
             string file = parts[parts.Length - 1];
-            string ext = Path.GetExtension(file);
-            string stem = !string.IsNullOrEmpty(ext) ? file.Substring(0, file.Length - ext.Length) : file;
+            SubsonicUrlHelper.SplitStemAndExtensionSafe(file, out string stem, out _);
             string parent = parts[parts.Length - 2];
 
             suf2 = parent + "\\" + file;
@@ -120,7 +155,7 @@ namespace MusicBeePlugin
         internal static string NormalizeMetaToken(string value)
         {
             if (string.IsNullOrWhiteSpace(value)) return "";
-            string norm = value.Normalize(NormalizationForm.FormKC);
+            string norm = SafeNormalizeFormKC(value);
             var sb = new StringBuilder(norm.Length);
             bool lastSpace = false;
 

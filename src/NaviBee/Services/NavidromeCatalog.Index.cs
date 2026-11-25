@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 
 namespace MusicBeePlugin
@@ -9,10 +8,20 @@ namespace MusicBeePlugin
     {
         private void BuildIndexes(List<SubsonicSong> songs)
         {
+            var cleanSongs = new List<SubsonicSong>(songs != null ? songs.Count : 0);
+            if (songs != null)
+            {
+                for (int i = 0; i < songs.Count; i++)
+                {
+                    if (songs[i] != null)
+                        cleanSongs.Add(songs[i]);
+                }
+            }
+
             var albumArtists = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var albumExplicitArtist = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var s in songs)
+            foreach (var s in cleanSongs)
             {
                 string albKey = !string.IsNullOrEmpty(s.AlbumId) ? s.AlbumId : s.Album;
                 if (string.IsNullOrEmpty(albKey)) continue;
@@ -30,7 +39,7 @@ namespace MusicBeePlugin
                 }
             }
 
-            foreach (var s in songs)
+            foreach (var s in cleanSongs)
             {
                 string albKey = !string.IsNullOrEmpty(s.AlbumId) ? s.AlbumId : s.Album;
                 if (string.IsNullOrEmpty(albKey)) continue;
@@ -46,7 +55,7 @@ namespace MusicBeePlugin
                 }
             }
 
-            songs.Sort((a, b) =>
+            cleanSongs.Sort((a, b) =>
             {
                 string aArtist = !string.IsNullOrEmpty(a.AlbumArtist) ? a.AlbumArtist : (a.Artist ?? "");
                 string bArtist = !string.IsNullOrEmpty(b.AlbumArtist) ? b.AlbumArtist : (b.Artist ?? "");
@@ -63,128 +72,151 @@ namespace MusicBeePlugin
                 return string.Compare(a.Title ?? "", b.Title ?? "", StringComparison.OrdinalIgnoreCase);
             });
 
-            _allSongs = songs;
-            _byPath = new Dictionary<string, SubsonicSong>(songs.Count * 2, StringComparer.OrdinalIgnoreCase);
-            _byUniqueFileName = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
-            _byId = new Dictionary<string, SubsonicSong>(songs.Count, StringComparer.OrdinalIgnoreCase);
-            ResetLocalMatchIndexesLocked(songs.Count);
-            _byArtist = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
-            _byAlbumKey = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
-            _albumsByArtist = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-            _coverToCanonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            _coverBySanitizedAlbumDir = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            _coverBySanitizedAlbumName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            _allAlbumKeys = new List<string>();
-            _starredSongs = new List<SubsonicSong>();
-            _topRatedSongs = new List<SubsonicSong>();
-            _mostPlayedSongs = new List<SubsonicSong>();
+            var indexedSongs = new List<SubsonicSong>(cleanSongs.Count);
+            var byPath = new Dictionary<string, SubsonicSong>(cleanSongs.Count * 2, StringComparer.OrdinalIgnoreCase);
+            var byUniqueFileName = new Dictionary<string, SubsonicSong>(cleanSongs.Count, StringComparer.OrdinalIgnoreCase);
+            var byId = new Dictionary<string, SubsonicSong>(cleanSongs.Count, StringComparer.OrdinalIgnoreCase);
+            var localMatch = new LocalMatchIndexSet(cleanSongs.Count);
+            var byArtist = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
+            var byAlbumKey = new Dictionary<string, List<SubsonicSong>>(StringComparer.OrdinalIgnoreCase);
+            var albumsByArtist = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            var coverToCanonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var coverBySanitizedAlbumDir = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var coverBySanitizedAlbumName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var allAlbumKeys = new List<string>();
+            var starredSongs = new List<SubsonicSong>();
+            var topRatedSongs = new List<SubsonicSong>();
+            var mostPlayedSongs = new List<SubsonicSong>();
 
             var seenAlbums = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var seenAlbumsByArtist = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var distinctCovers = new HashSet<string>(StringComparer.Ordinal);
-            var tagsList = new List<KeyValuePair<byte, string>[]>(songs.Count);
+            var tagsList = new List<KeyValuePair<byte, string>[]>(cleanSongs.Count);
 
-            for (int i = 0; i < songs.Count; i++)
+            for (int i = 0; i < cleanSongs.Count; i++)
             {
-                var s = songs[i];
-                s.CatalogIndex = i;
-                string rel = SubsonicUrlHelper.BuildRelativePath(s);
-                if (_byPath.ContainsKey(rel) && !string.IsNullOrEmpty(s.Id))
+                var s = cleanSongs[i];
+                try
                 {
-                    string ext = Path.GetExtension(rel);
-                    string stem = rel.Substring(0, rel.Length - ext.Length);
-                    string shortId = s.Id.Length > 8 ? s.Id.Substring(0, 8) : s.Id;
-                    rel = $"{stem} [{SubsonicUrlHelper.Sanitize(shortId)}]{ext}";
-                }
+                    string rel = SubsonicUrlHelper.BuildRelativePath(s);
+                    if (byPath.ContainsKey(rel) && !string.IsNullOrEmpty(s.Id))
+                    {
+                        SubsonicUrlHelper.SplitStemAndExtensionSafe(rel, out string stem, out string ext);
+                        string shortId = s.Id.Length > 8 ? s.Id.Substring(0, 8) : s.Id;
+                        rel = $"{stem} [{SubsonicUrlHelper.Sanitize(shortId)}]{ext}";
+                    }
 
-                s.CachedRelativePath = rel;
-                s.CachedTags = null;
-                s.CachedTags = SubsonicUrlHelper.ToTags(s);
-                tagsList.Add(s.CachedTags);
+                    s.CachedRelativePath = rel;
+                    s.CachedTags = null;
+                    var tags = SubsonicUrlHelper.ToTags(s);
+                    s.CachedTags = tags;
 
-                _byPath[rel] = s;
-                _byPath["Navidrome:\\" + rel] = s;
-                if (!string.IsNullOrEmpty(s.Id))
-                    _byId[s.Id] = s;
+                    string fname = SubsonicUrlHelper.GetFileNameSafe(rel);
+                    string artistName = SubsonicUrlHelper.SanitizeFolderSegment(!string.IsNullOrEmpty(s.AlbumArtist) ? s.AlbumArtist : s.Artist);
+                    string albumFolder = SubsonicUrlHelper.SanitizeFolderSegment(!string.IsNullOrEmpty(s.Album) ? s.Album : "Unknown Album");
+                    string artistAlbumKey = $"{artistName}\\{albumFolder}";
+                    string globalAlbKey = $"{albumFolder} — {artistName}";
+                    string canonicalCover = s.CanonicalCoverId;
 
-                IndexLocalMatchKeysLocked(s, rel);
+                    s.CatalogIndex = indexedSongs.Count;
+                    indexedSongs.Add(s);
+                    tagsList.Add(tags);
 
-                string fname = Path.GetFileName(rel);
-                if (!string.IsNullOrEmpty(fname))
-                {
-                    if (_byUniqueFileName.ContainsKey(fname))
-                        _byUniqueFileName[fname] = null; // Ambiguous filename across albums
-                    else
-                        _byUniqueFileName[fname] = s;
-                }
-
-                string canonicalCover = s.CanonicalCoverId;
-                if (!string.IsNullOrEmpty(canonicalCover))
-                {
-                    distinctCovers.Add(canonicalCover);
-                    if (!string.IsNullOrEmpty(s.CoverArt))
-                        _coverToCanonical[s.CoverArt] = canonicalCover;
+                    byPath[rel] = s;
+                    byPath["Navidrome:\\" + rel] = s;
                     if (!string.IsNullOrEmpty(s.Id))
-                        _coverToCanonical[s.Id] = canonicalCover;
-                    if (!string.IsNullOrEmpty(s.AlbumId))
-                        _coverToCanonical["al-" + s.AlbumId] = canonicalCover;
+                        byId[s.Id] = s;
+
+                    try { IndexLocalMatchKeys(localMatch, s, rel); }
+                    catch { }
+
+                    if (!string.IsNullOrEmpty(fname))
+                    {
+                        if (byUniqueFileName.ContainsKey(fname))
+                            byUniqueFileName[fname] = null; // Ambiguous filename across albums
+                        else
+                            byUniqueFileName[fname] = s;
+                    }
+
+                    if (!string.IsNullOrEmpty(canonicalCover))
+                    {
+                        distinctCovers.Add(canonicalCover);
+                        if (!string.IsNullOrEmpty(s.CoverArt))
+                            coverToCanonical[s.CoverArt] = canonicalCover;
+                        if (!string.IsNullOrEmpty(s.Id))
+                            coverToCanonical[s.Id] = canonicalCover;
+                        if (!string.IsNullOrEmpty(s.AlbumId))
+                            coverToCanonical["al-" + s.AlbumId] = canonicalCover;
+                    }
+
+                    if (s.Starred) starredSongs.Add(s);
+                    if (s.UserRating >= 3) topRatedSongs.Add(s);
+                    if (s.PlayCount > 0) mostPlayedSongs.Add(s);
+
+                    if (!byArtist.TryGetValue(artistName, out var artistList))
+                    {
+                        artistList = new List<SubsonicSong>();
+                        byArtist[artistName] = artistList;
+                    }
+                    artistList.Add(s);
+
+                    if (!byAlbumKey.TryGetValue(artistAlbumKey, out var albSongs))
+                    {
+                        albSongs = new List<SubsonicSong>();
+                        byAlbumKey[artistAlbumKey] = albSongs;
+                    }
+                    albSongs.Add(s);
+
+                    if (!byAlbumKey.ContainsKey(albumFolder))
+                        byAlbumKey[albumFolder] = albSongs;
+
+                    if (!string.IsNullOrEmpty(canonicalCover))
+                    {
+                        if (!coverBySanitizedAlbumDir.ContainsKey(artistAlbumKey))
+                            coverBySanitizedAlbumDir[artistAlbumKey] = canonicalCover;
+                        if (!coverBySanitizedAlbumName.ContainsKey(albumFolder))
+                            coverBySanitizedAlbumName[albumFolder] = canonicalCover;
+                    }
+
+                    if (!albumsByArtist.TryGetValue(artistName, out var albList))
+                    {
+                        albList = new List<string>();
+                        albumsByArtist[artistName] = albList;
+                        seenAlbumsByArtist[artistName] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    }
+                    if (seenAlbumsByArtist[artistName].Add(albumFolder))
+                        albList.Add(albumFolder);
+
+                    if (seenAlbums.Add(globalAlbKey))
+                    {
+                        allAlbumKeys.Add(globalAlbKey);
+                        byAlbumKey[globalAlbKey] = albSongs;
+                    }
                 }
-
-                if (s.Starred) _starredSongs.Add(s);
-                if (s.UserRating >= 3) _topRatedSongs.Add(s);
-                if (s.PlayCount > 0) _mostPlayedSongs.Add(s);
-
-                string artistName = SubsonicUrlHelper.SanitizeFolderSegment(!string.IsNullOrEmpty(s.AlbumArtist) ? s.AlbumArtist : s.Artist);
-                if (!_byArtist.TryGetValue(artistName, out var artistList))
-                {
-                    artistList = new List<SubsonicSong>();
-                    _byArtist[artistName] = artistList;
-                }
-                artistList.Add(s);
-
-                string albumFolder = SubsonicUrlHelper.SanitizeFolderSegment(!string.IsNullOrEmpty(s.Album) ? s.Album : "Unknown Album");
-                string artistAlbumKey = $"{artistName}\\{albumFolder}";
-
-                if (!_byAlbumKey.TryGetValue(artistAlbumKey, out var albSongs))
-                {
-                    albSongs = new List<SubsonicSong>();
-                    _byAlbumKey[artistAlbumKey] = albSongs;
-                }
-                albSongs.Add(s);
-
-                if (!_byAlbumKey.ContainsKey(albumFolder))
-                    _byAlbumKey[albumFolder] = albSongs;
-
-                if (!string.IsNullOrEmpty(canonicalCover))
-                {
-                    if (!_coverBySanitizedAlbumDir.ContainsKey(artistAlbumKey))
-                        _coverBySanitizedAlbumDir[artistAlbumKey] = canonicalCover;
-                    if (!_coverBySanitizedAlbumName.ContainsKey(albumFolder))
-                        _coverBySanitizedAlbumName[albumFolder] = canonicalCover;
-                }
-
-                if (!_albumsByArtist.TryGetValue(artistName, out var albList))
-                {
-                    albList = new List<string>();
-                    _albumsByArtist[artistName] = albList;
-                    seenAlbumsByArtist[artistName] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                }
-                if (seenAlbumsByArtist[artistName].Add(albumFolder))
-                    albList.Add(albumFolder);
-
-                string globalAlbKey = $"{albumFolder} — {artistName}";
-                if (seenAlbums.Add(globalAlbKey))
-                {
-                    _allAlbumKeys.Add(globalAlbKey);
-                    _byAlbumKey[globalAlbKey] = albSongs;
-                }
+                catch { }
             }
 
+            allAlbumKeys.Sort(StringComparer.OrdinalIgnoreCase);
+            topRatedSongs.Sort((a, b) => b.UserRating.CompareTo(a.UserRating));
+            mostPlayedSongs.Sort((a, b) => b.PlayCount.CompareTo(a.PlayCount));
+
+            _allSongs = indexedSongs;
             _allTagArrays = tagsList.ToArray();
+            _byPath = byPath;
+            _byUniqueFileName = byUniqueFileName;
+            _byId = byId;
+            CommitLocalMatchIndexesLocked(localMatch);
+            _byArtist = byArtist;
+            _byAlbumKey = byAlbumKey;
+            _albumsByArtist = albumsByArtist;
+            _coverToCanonical = coverToCanonical;
+            _coverBySanitizedAlbumDir = coverBySanitizedAlbumDir;
+            _coverBySanitizedAlbumName = coverBySanitizedAlbumName;
+            _allAlbumKeys = allAlbumKeys;
             _distinctAlbumCoverIds = distinctCovers.ToList();
-            _allAlbumKeys.Sort(StringComparer.OrdinalIgnoreCase);
-            _topRatedSongs.Sort((a, b) => b.UserRating.CompareTo(a.UserRating));
-            _mostPlayedSongs.Sort((a, b) => b.PlayCount.CompareTo(a.PlayCount));
+            _starredSongs = starredSongs;
+            _topRatedSongs = topRatedSongs;
+            _mostPlayedSongs = mostPlayedSongs;
         }
 
         public string ResolveCanonicalCoverId(string coverId)

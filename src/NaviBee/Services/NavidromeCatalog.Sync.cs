@@ -113,6 +113,7 @@ namespace MusicBeePlugin
 
             lock (_lock)
             {
+                BuildIndexes(ordered);
                 _meta = new CatalogMetadata
                 {
                     LastScan = (scanStatus != null && !scanStatus.Scanning) ? (scanStatus.LastScan ?? "") : "",
@@ -121,7 +122,6 @@ namespace MusicBeePlugin
                     ArtworkSize = artworkSize,
                     LastUserStateSyncUtc = prevUserStateSyncUtc
                 };
-                BuildIndexes(ordered);
             }
             SaveToDisk();
 

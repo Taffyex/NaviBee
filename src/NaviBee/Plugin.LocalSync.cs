@@ -279,11 +279,16 @@ namespace MusicBeePlugin
                     Report(shortSummary);
                     if (showDialog) ShowUiMessage(dialogSummary, "Navidrome Local Library Link & Sync", MessageBoxIcon.Information);
                 }
+                catch (OperationCanceledException) { }
                 catch (Exception ex)
                 {
-                    string err = $"Navidrome local link error: {FriendlyErrors.FormatException(ex)}";
-                    statusCallback?.Invoke(err);
-                    Api.MB_SetBackgroundTaskMessage?.Invoke(err);
+                    if (!ct.IsCancellationRequested)
+                    {
+                        string err = $"Navidrome local link error: {FriendlyErrors.FormatException(ex)}";
+                        statusCallback?.Invoke(err);
+                        Api.MB_SetBackgroundTaskMessage?.Invoke(err);
+                        if (showDialog) ShowUiMessage(err, "Navidrome Local Link", MessageBoxIcon.Warning);
+                    }
                 }
                 finally
                 {

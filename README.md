@@ -1,4 +1,4 @@
-# NaviBee v1.2.0
+# NaviBee v1.2.1
 
 NaviBee is a native **Navidrome and Subsonic / OpenSubsonic storage provider and two-way sync plugin** for [MusicBee](https://getmusicbee.com/). Engineered in pure C# (.NET Framework 4.8, x86) against the MusicBee plugin API, it links your local MusicBee master library to Navidrome and mounts your remote library with HTTP `Range`-seekable streaming, single-pass audio/artwork/lyrics caching, time-synced LRC lyrics, full two-way playcount/rating/star sync, and safe opt-in playlist synchronization.
 
@@ -7,9 +7,9 @@ NaviBee is a native **Navidrome and Subsonic / OpenSubsonic storage provider and
 ## Installation
 
 ### Quick Install (Recommended)
-1. Download **[`NaviBee_v1.2.0.zip`](https://github.com/Taffyex/NaviBee/releases/download/v1.2.0/NaviBee_v1.2.0.zip)** (or raw **[`mb_NaviBee.dll`](https://github.com/Taffyex/NaviBee/releases/download/v1.2.0/mb_NaviBee.dll)**) from the [latest release](https://github.com/Taffyex/NaviBee/releases).
+1. Download **[`NaviBee_v1.2.1.zip`](https://github.com/Taffyex/NaviBee/releases/download/v1.2.1/NaviBee_v1.2.1.zip)** (or raw **[`mb_NaviBee.dll`](https://github.com/Taffyex/NaviBee/releases/download/v1.2.1/mb_NaviBee.dll)**) from the [latest release](https://github.com/Taffyex/NaviBee/releases).
 2. In MusicBee, press `Ctrl + O` (or go to **Edit** > **Preferences**).
-3. Select **Plugins**, click **Add Plugin**, and choose `NaviBee_v1.2.0.zip` (or `mb_NaviBee.dll`).
+3. Select **Plugins**, click **Add Plugin**, and choose `NaviBee_v1.2.1.zip` (or `mb_NaviBee.dll`).
 4. Click **Apply** and restart MusicBee.
 
 ### Manual Drop-in

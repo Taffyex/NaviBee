@@ -75,7 +75,7 @@ namespace MusicBeePlugin
             if (!Settings.PushPlaylistsToServer)
                 return;
 
-            string plName = Path.GetFileNameWithoutExtension(sourceFileUrl);
+            string plName = SubsonicUrlHelper.GetFileNameWithoutExtensionSafe(sourceFileUrl);
             if (string.IsNullOrEmpty(plName)) return;
 
             if (type == NotificationType.PlaylistDeleted)

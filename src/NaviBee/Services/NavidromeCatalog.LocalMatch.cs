@@ -5,18 +5,46 @@ namespace MusicBeePlugin
 {
     public partial class NavidromeCatalog
     {
-        private void ResetLocalMatchIndexesLocked(int songCount)
+        private sealed class LocalMatchIndexSet
         {
-            _byServerSuffix3 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
-            _byServerSuffix2 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
-            _byServerStem3 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
-            _byServerStem2 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
-            _byServerDiscSuffix = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
-            _byServerDiscStem = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
-            _byMetaExact = new Dictionary<string, SubsonicSong>(songCount * 2, StringComparer.OrdinalIgnoreCase);
-            _byMetaLoose = new Dictionary<string, List<SubsonicSong>>(songCount, StringComparer.OrdinalIgnoreCase);
-            _byAlbumTitle = new Dictionary<string, List<SubsonicSong>>(songCount, StringComparer.OrdinalIgnoreCase);
-            _byArtistTitle = new Dictionary<string, List<SubsonicSong>>(songCount, StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, SubsonicSong> ByServerSuffix3;
+            public readonly Dictionary<string, SubsonicSong> ByServerSuffix2;
+            public readonly Dictionary<string, SubsonicSong> ByServerStem3;
+            public readonly Dictionary<string, SubsonicSong> ByServerStem2;
+            public readonly Dictionary<string, SubsonicSong> ByServerDiscSuffix;
+            public readonly Dictionary<string, SubsonicSong> ByServerDiscStem;
+            public readonly Dictionary<string, SubsonicSong> ByMetaExact;
+            public readonly Dictionary<string, List<SubsonicSong>> ByMetaLoose;
+            public readonly Dictionary<string, List<SubsonicSong>> ByAlbumTitle;
+            public readonly Dictionary<string, List<SubsonicSong>> ByArtistTitle;
+
+            public LocalMatchIndexSet(int songCount)
+            {
+                ByServerSuffix3 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
+                ByServerSuffix2 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
+                ByServerStem3 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
+                ByServerStem2 = new Dictionary<string, SubsonicSong>(songCount, StringComparer.OrdinalIgnoreCase);
+                ByServerDiscSuffix = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+                ByServerDiscStem = new Dictionary<string, SubsonicSong>(StringComparer.OrdinalIgnoreCase);
+                ByMetaExact = new Dictionary<string, SubsonicSong>(songCount * 2, StringComparer.OrdinalIgnoreCase);
+                ByMetaLoose = new Dictionary<string, List<SubsonicSong>>(songCount, StringComparer.OrdinalIgnoreCase);
+                ByAlbumTitle = new Dictionary<string, List<SubsonicSong>>(songCount, StringComparer.OrdinalIgnoreCase);
+                ByArtistTitle = new Dictionary<string, List<SubsonicSong>>(songCount, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private void CommitLocalMatchIndexesLocked(LocalMatchIndexSet target)
+        {
+            _byServerSuffix3 = target.ByServerSuffix3;
+            _byServerSuffix2 = target.ByServerSuffix2;
+            _byServerStem3 = target.ByServerStem3;
+            _byServerStem2 = target.ByServerStem2;
+            _byServerDiscSuffix = target.ByServerDiscSuffix;
+            _byServerDiscStem = target.ByServerDiscStem;
+            _byMetaExact = target.ByMetaExact;
+            _byMetaLoose = target.ByMetaLoose;
+            _byAlbumTitle = target.ByAlbumTitle;
+            _byArtistTitle = target.ByArtistTitle;
         }
 
         private static void AddUnique(Dictionary<string, SubsonicSong> dict, string key, SubsonicSong song)
@@ -49,7 +77,7 @@ namespace MusicBeePlugin
             list.Add(song);
         }
 
-        private void IndexLocalMatchKeysLocked(SubsonicSong s, string syntheticRel)
+        private static void IndexLocalMatchKeys(LocalMatchIndexSet target, SubsonicSong s, string syntheticRel)
         {
             string serverPath = !string.IsNullOrWhiteSpace(s.Path) ? s.Path : syntheticRel;
             LocalLibraryLinker.ExtractPathSuffixes(
@@ -57,12 +85,12 @@ namespace MusicBeePlugin
                 out var suf3, out var suf2, out var stem3, out var stem2,
                 out var discSuf, out var discStem);
 
-            AddUnique(_byServerSuffix3, suf3, s);
-            AddUnique(_byServerSuffix2, suf2, s);
-            AddUnique(_byServerStem3, stem3, s);
-            AddUnique(_byServerStem2, stem2, s);
-            AddUnique(_byServerDiscSuffix, discSuf, s);
-            AddUnique(_byServerDiscStem, discStem, s);
+            AddUnique(target.ByServerSuffix3, suf3, s);
+            AddUnique(target.ByServerSuffix2, suf2, s);
+            AddUnique(target.ByServerStem3, stem3, s);
+            AddUnique(target.ByServerStem2, stem2, s);
+            AddUnique(target.ByServerDiscSuffix, discSuf, s);
+            AddUnique(target.ByServerDiscStem, discStem, s);
 
             string title = LocalLibraryLinker.NormalizeMetaToken(s.Title);
             if (string.IsNullOrEmpty(title)) return;
@@ -74,14 +102,14 @@ namespace MusicBeePlugin
             {
                 string a = artistVariants[i];
                 if (s.Track > 0)
-                    AddUnique(_byMetaExact, $"{a}|{album}|{disc}|{s.Track}|{title}", s);
+                    AddUnique(target.ByMetaExact, $"{a}|{album}|{disc}|{s.Track}|{title}", s);
 
-                AddToBucket(_byMetaLoose, $"{a}|{album}|{title}", s);
-                AddToBucket(_byArtistTitle, $"{a}|{title}", s);
+                AddToBucket(target.ByMetaLoose, $"{a}|{album}|{title}", s);
+                AddToBucket(target.ByArtistTitle, $"{a}|{title}", s);
             }
 
             if (!string.IsNullOrEmpty(album))
-                AddToBucket(_byAlbumTitle, $"{album}|{title}", s);
+                AddToBucket(target.ByAlbumTitle, $"{album}|{title}", s);
         }
 
         public SubsonicSong FindSongByServerPathSuffix(string localPath)

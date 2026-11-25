@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.1
+- **Fixed mid-alphabet catalog cutoff & local linking on Linux/NAS Navidrome servers**: Replaced Windows `System.IO.Path` calls on remote track and playlist paths with string-only helpers so Linux paths containing `"`, `<`, `>`, `|`, `:`, `*`, `?`, or control characters no longer abort catalog indexing on .NET 4.8.
+- **Safe Unicode & suffix handling**: Strips invalid unpaired UTF-16 surrogates (while keeping emojis/CJK intact), safely sanitizes malformed file extensions in both virtual paths and the audio cache, and guards URL query unescaping.
+- **Atomic, fault-isolated catalog indexing**: Builds all catalog and local-match lookup tables off-instance before swapping them in, isolates per-track errors without breaking tag indexes, and fixes a trailing-comma JSON edge case in streaming `catalog.json` writes.
+- **Visible background sync errors**: Startup sync, manual resync, library import, and local linking now surface unexpected exceptions in MusicBee instead of failing silently.
+
 ## v1.2.0
 - **Performance & 32-bit x86 Memory Hardening (20k–50k+ Track Libraries)**:
   - **Line-Streamed Compact `catalog.json`**: Replaced single-string serialization with a buffered streaming line-delimited JSON array writer/reader (omitting empty/zero defaults), cutting 32-bit Large Object Heap (LOH) spikes from ~40–80 MB down to `<64 KB` while remaining 100% valid JSON with automatic legacy file fallback.

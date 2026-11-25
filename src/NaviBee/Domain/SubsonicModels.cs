@@ -123,14 +123,16 @@ namespace MusicBeePlugin
 
     public static class SubsonicUrlHelper
     {
+        private static readonly char[] InvalidFileNameChars = System.IO.Path.GetInvalidFileNameChars();
+        private static readonly char[] PathSeparators = new[] { '/', '\\' };
+
         public static string Sanitize(string segment)
         {
             if (string.IsNullOrEmpty(segment)) return "Unknown";
-            char[] invalid = System.IO.Path.GetInvalidFileNameChars();
             char[] chars = segment.ToCharArray();
             for (int i = 0; i < chars.Length; i++)
             {
-                if (Array.IndexOf(invalid, chars[i]) >= 0 || chars[i] == '/' || chars[i] == '\\')
+                if (Array.IndexOf(InvalidFileNameChars, chars[i]) >= 0 || chars[i] == '/' || chars[i] == '\\')
                     chars[i] = '_';
             }
             string s = new string(chars).Trim().TrimEnd('.');
@@ -139,13 +141,61 @@ namespace MusicBeePlugin
 
         public static string SanitizeFolderSegment(string segment) => Sanitize(segment);
 
+        public static string SanitizeExtension(string suffix)
+        {
+            if (string.IsNullOrWhiteSpace(suffix)) return "mp3";
+            string trimmed = suffix.Trim().TrimStart('.');
+            if (string.IsNullOrEmpty(trimmed)) return "mp3";
+            string clean = Sanitize(trimmed).Trim('.', '_');
+            return string.IsNullOrEmpty(clean) ? "mp3" : clean;
+        }
+
+        public static string GetFileNameSafe(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            int sep = path.LastIndexOfAny(PathSeparators);
+            return sep >= 0 ? path.Substring(sep + 1) : path;
+        }
+
+        /// <summary>Preserves any directory prefix in <paramref name="stem"/> and splits only the trailing file extension.</summary>
+        public static void SplitStemAndExtensionSafe(string path, out string stem, out string ext)
+        {
+            if (string.IsNullOrEmpty(path)) { stem = ""; ext = ""; return; }
+            int sep = path.LastIndexOfAny(PathSeparators);
+            int dot = path.LastIndexOf('.');
+            if (dot > sep + 1 && dot < path.Length - 1)
+            {
+                stem = path.Substring(0, dot);
+                ext = path.Substring(dot);
+            }
+            else
+            {
+                stem = path;
+                ext = "";
+            }
+        }
+
+        public static string GetFileNameWithoutExtensionSafe(string path)
+        {
+            string file = GetFileNameSafe(path);
+            SplitStemAndExtensionSafe(file, out string stem, out _);
+            return stem;
+        }
+
+        private static string TryUnescapeDataString(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            try { return Uri.UnescapeDataString(raw); }
+            catch (UriFormatException) { return raw; }
+        }
+
         public static string BuildRelativePath(SubsonicSong song)
         {
             if (song == null) return "";
             string artist = Sanitize(!string.IsNullOrEmpty(song.AlbumArtist) ? song.AlbumArtist : song.Artist);
             string album = Sanitize(song.Album);
             string title = Sanitize(song.Title);
-            string ext = !string.IsNullOrEmpty(song.Suffix) ? song.Suffix.TrimStart('.') : "mp3";
+            string ext = SanitizeExtension(song.Suffix);
             string disc = song.DiscNumber > 1 ? $"{song.DiscNumber}-" : "";
             string track = song.Track > 0 ? $"{disc}{song.Track:D2} - " : "";
             return $"{artist}\\{album}\\{track}{title}.{ext}";
@@ -180,7 +230,7 @@ namespace MusicBeePlugin
                     int eq = pair.IndexOf('=');
                     if (eq <= 0) continue;
                     string key = pair.Substring(0, eq).Trim();
-                    string val = Uri.UnescapeDataString(pair.Substring(eq + 1).Trim());
+                    string val = TryUnescapeDataString(pair.Substring(eq + 1).Trim());
 
                     switch (key.ToLowerInvariant())
                     {
